@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build plugin archive
+        run: |
+          set -e
+          mkdir -p build/WebGuard2.AI
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.gitignore' \
+            --exclude='build' \
+            --exclude='*.zip' \
+            ./ build/WebGuard2.AI/
+          ( cd build && zip -r "../WebGuard2.AI.zip" WebGuard2.AI )
+          unzip -l WebGuard2.AI.zip
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: WebGuard.AI ${{ github.ref_name }}
+          files: WebGuard2.AI.zip
+          generate_release_notes: true
