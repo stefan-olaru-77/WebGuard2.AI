@@ -1,0 +1,16 @@
+# Sistem de operare / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Loguri
+*.log
+
+# Dependinte
+node_modules/
+vendor/
+
+# IDE
+.idea/
+.vscode/
