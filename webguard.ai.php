@@ -837,8 +837,20 @@ class WebGuardAI {
     /**
      * Upsert an aggregated event row (shared by live logging and log ingestion).
      */
+    /** True pentru adrese de loopback (127.0.0.0/8 sau ::1). */
+    private function is_loopback_ip($ip) {
+        if ($ip === '::1') {
+            return true;
+        }
+        return (strpos($ip, '127.') === 0);
+    }
+
     private function store_event($category, $ip, $method, $uri, $ua, $status_code, $detail) {
         if (!isset(self::CATEGORIES[$category]) || !filter_var($ip, FILTER_VALIDATE_IP)) {
+            return;
+        }
+        // Zgomot local (cron, scanuri/teste de pe server): nu logam loopback.
+        if ($this->is_loopback_ip($ip)) {
             return;
         }
         $this->maybe_install();
