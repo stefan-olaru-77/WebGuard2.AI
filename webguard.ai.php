@@ -1597,16 +1597,20 @@ class WebGuardAI {
         if ($seconds <= 0) {
             return 'permanent';
         }
-        if ($seconds >= DAY_IN_SECONDS && $seconds % DAY_IN_SECONDS === 0) {
-            return ($seconds / DAY_IN_SECONDS) . 'z';
+        $d = intdiv($seconds, DAY_IN_SECONDS);
+        $h = intdiv($seconds % DAY_IN_SECONDS, HOUR_IN_SECONDS);
+        $m = intdiv($seconds % HOUR_IN_SECONDS, MINUTE_IN_SECONDS);
+        $s = $seconds % MINUTE_IN_SECONDS;
+        if ($d > 0) {
+            return $d . 'z' . ($h > 0 ? ':' . $h . 'h' : '');
         }
-        if ($seconds >= HOUR_IN_SECONDS && $seconds % HOUR_IN_SECONDS === 0) {
-            return ($seconds / HOUR_IN_SECONDS) . 'h';
+        if ($h > 0) {
+            return $h . 'h' . ($m > 0 ? ':' . $m . 'm' : '');
         }
-        if ($seconds >= MINUTE_IN_SECONDS && $seconds % MINUTE_IN_SECONDS === 0) {
-            return ($seconds / MINUTE_IN_SECONDS) . 'min';
+        if ($m > 0) {
+            return $m . 'm';
         }
-        return $seconds . 's';
+        return $s . 's';
     }
 
     /* ---------------------------------------------------------------------
