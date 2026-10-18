@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WebGuard.AI
  * Description: Firewall + detectie si raportare locala: ban pe login, auto-ban, si capturarea evenimentelor de tip file-injection, brute-force, scanner-probing si sql-injection. Doua tabele proprii, pagini separate per tip de problema, tabele live in admin.
- * Version: 2026.10.18.2
+ * Version: 2026.10.18.3
  * Author: Atelierul de IT
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -1649,7 +1649,7 @@ class WebGuardAI {
             'webguard-admin',
             plugins_url('assets/admin.js', __FILE__),
             array(),
-            '2026.10.18.2',
+            '2026.10.18.3',
             true
         );
         wp_localize_script('webguard-admin', 'WebGuardAdmin', array(
