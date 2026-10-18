@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WebGuard.AI
  * Description: Firewall + detectie si raportare locala: ban pe login, auto-ban, si capturarea evenimentelor de tip file-injection, brute-force, scanner-probing si sql-injection. Doua tabele proprii, pagini separate per tip de problema, tabele live in admin.
- * Version: 2026.10.18-events
+ * Version: 2026.10.18.2
  * Author: Atelierul de IT
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -34,6 +34,9 @@ class WebGuardAI {
         'brute_force'     => 'Brute Force (autentificare)',
         'scanner_probing' => 'Scanner / Probing',
         'sql_injection'   => 'SQL Injection',
+        'xss'             => 'XSS (cross-site scripting)',
+        'command_injection' => 'Command Injection',
+        'rate_limit'      => 'Rate Limit (trafic excesiv)',
     );
 
     // Pagina de admin corespunzatoare fiecarei categorii (pentru redirect dupa actiuni).
@@ -42,7 +45,13 @@ class WebGuardAI {
         'brute_force'     => 'webguard-events-brute',
         'scanner_probing' => 'webguard-events-scanner',
         'sql_injection'   => 'webguard-events-sqli',
+        'xss'             => 'webguard-events-xss',
+        'command_injection' => 'webguard-events-cmd',
+        'rate_limit'      => 'webguard-events-rate',
     );
+
+    /** Versiunea schemei (pentru migrari aditive, ex. coloane noi in tabelul IP). */
+    const DB_VERSION = '2';
 
     /**
      * Cloudflare published proxy ranges (fallback only, kept in sync with
@@ -128,6 +137,12 @@ class WebGuardAI {
     /** SQL injection signatures (applied to decoded query, body and cookies). */
     const SQLI_PATTERN = '#(union\s+select|select\s+[a-z0-9_,\*\s\.]{1,60}\s+from|insert\s+into|delete\s+from|update\s+[a-z0-9_]{1,40}\s+set|sleep\s*\(|benchmark\s*\(|pg_sleep\s*\(|waitfor\s+delay|load_file\s*\(|into\s+outfile|into\s+dumpfile|extractvalue\s*\(|updatexml\s*\(|information_schema|@@version|or\s+1\s*=\s*1|or\s+true\b|"\s*or\s*"|\'\s*or\s*\')#i';
 
+    /** XSS signatures (query, body, cookies). Conservator, ca sa evite fals-pozitive. */
+    const XSS_PATTERN = '#(<script|</script|javascript\s*:|vbscript\s*:|data\s*:\s*text/html|on(?:error|load|click|mouseover|focus|submit|animation|start)\s*=|document\.(?:cookie|write|location)|window\.location\s*=|eval\s*\(|String\.fromCharCode|<img[^>]+onerror|<svg[^>]+onload|<iframe|<embed|<object[^>]+data\s*=)#i';
+
+    /** Command injection signatures (query, body, cookies). */
+    const CMDI_PATTERN = '#(;|%3b|&&|\|\|)\s*(cat|ls|id|whoami|uname|wget|curl|nc|netcat|bash|sh|ping|chmod|rm|python|perl|php)\b|\|\s*(cat|nc|wget|curl|bash|sh|id|whoami)\b|`[^`]{1,120}`|\$\((?:cat|id|whoami|uname|wget|curl|nc|bash|sh)\b|\b(?:system|exec|shell_exec|passthru|popen|proc_open)\s*\(|/bin/(?:sh|bash)|/etc/passwd#i';
+
     private static $instance = null;
 
     private $settings = null;
@@ -175,6 +190,8 @@ class WebGuardAI {
             ban_until bigint(20) unsigned DEFAULT NULL,
             ban_permanent tinyint(1) NOT NULL DEFAULT 0,
             ban_count int(10) unsigned NOT NULL DEFAULT 0,
+            req_count int(10) unsigned NOT NULL DEFAULT 0,
+            req_window bigint(20) unsigned NOT NULL DEFAULT 0,
             source varchar(10) NOT NULL DEFAULT 'manual',
             config longtext NULL,
             updated_at bigint(20) unsigned NOT NULL DEFAULT 0,
@@ -232,6 +249,30 @@ class WebGuardAI {
         if (!$this->table_exists(self::table_ip()) || !$this->table_exists(self::table_events())) {
             self::install();
         }
+        $this->maybe_upgrade_schema();
+    }
+
+    /**
+     * Migrari aditive de schema (ruleaza o singura data, ghidat de o optiune).
+     * Adauga coloanele de rate limiting pe instalatiile existente.
+     */
+    private function maybe_upgrade_schema() {
+        if (get_option('webguard_db_version') === self::DB_VERSION) {
+            return;
+        }
+        global $wpdb;
+        $table = self::table_ip();
+        if ($this->table_exists($table)) {
+            $cols = $wpdb->get_col("SHOW COLUMNS FROM {$table}", 0); // phpcs:ignore WordPress.DB.PreparedSQL
+            $cols = is_array($cols) ? $cols : array();
+            if (!in_array('req_count', $cols, true)) {
+                $wpdb->query("ALTER TABLE {$table} ADD COLUMN req_count int(10) unsigned NOT NULL DEFAULT 0 AFTER ban_count"); // phpcs:ignore WordPress.DB.PreparedSQL
+            }
+            if (!in_array('req_window', $cols, true)) {
+                $wpdb->query("ALTER TABLE {$table} ADD COLUMN req_window bigint(20) unsigned NOT NULL DEFAULT 0 AFTER req_count"); // phpcs:ignore WordPress.DB.PreparedSQL
+            }
+        }
+        update_option('webguard_db_version', self::DB_VERSION);
     }
 
     /* ---------------------------------------------------------------------
@@ -247,6 +288,11 @@ class WebGuardAI {
             'block_sensitive' => 1,
             'block_scanner'   => 0,
             'block_sqli'      => 0,
+            'block_xss'       => 0,
+            'block_cmd'       => 0,
+            // Rate limiting per IP (0 = dezactivat). Ex: 240 cereri / 60 secunde.
+            'rate_max'        => 0,
+            'rate_window'     => 60,
             'auto_ban_events' => 0,
             'retention_days'  => 30,
             'auto_refresh'    => 1,
@@ -483,7 +529,13 @@ class WebGuardAI {
         add_filter('cron_schedules', array($this, 'cron_schedules'));
         add_action('init', array($this, 'maybe_schedule_ingest'), 2);
         add_action('webguard_ingest_log', array($this, 'ingest_access_log'));
+        add_action('webguard_daily_cleanup', array($this, 'run_daily_cleanup'));
         add_action('admin_post_webguard_ingest_log', array($this, 'admin_post_ingest_log'));
+        add_action('admin_post_webguard_export', array($this, 'admin_post_export'));
+    }
+
+    public function run_daily_cleanup() {
+        $this->cleanup();
     }
 
     public function cron_schedules($schedules) {
@@ -493,15 +545,24 @@ class WebGuardAI {
                 'display'  => 'WebGuard: fiecare minut',
             );
         }
+        if (!isset($schedules['webguard_daily'])) {
+            $schedules['webguard_daily'] = array(
+                'interval' => DAY_IN_SECONDS,
+                'display'  => 'WebGuard: zilnic',
+            );
+        }
         return $schedules;
     }
 
     /**
-     * Programeaza ingestia log-ului daca nu e deja programata (self-heal).
+     * Programeaza ingestia log-ului si curatenia zilnica daca nu sunt deja programate.
      */
     public function maybe_schedule_ingest() {
         if (!wp_next_scheduled('webguard_ingest_log')) {
             wp_schedule_event(time() + 60, 'webguard_minute', 'webguard_ingest_log');
+        }
+        if (!wp_next_scheduled('webguard_daily_cleanup')) {
+            wp_schedule_event(time() + 3600, 'webguard_daily', 'webguard_daily_cleanup');
         }
     }
 
@@ -544,23 +605,131 @@ class WebGuardAI {
             $ip
         ), ARRAY_A);
 
-        if (!is_array($row) || empty($row['status'])) {
-            return array('allowed' => true, 'reason' => 'No matching rule');
-        }
-        if ($row['status'] === 'whitelist') {
+        if (is_array($row) && ($row['status'] ?? '') === 'whitelist') {
             return array('allowed' => true, 'reason' => 'Whitelisted');
         }
-        if ($row['status'] !== 'ban') {
-            return array('allowed' => true, 'reason' => 'Watching');
+        if (is_array($row) && ($row['status'] ?? '') === 'ban') {
+            if (!empty($row['ban_permanent'])) {
+                return array('allowed' => false, 'reason' => 'Permanently banned');
+            }
+            $ban_until = (int) $row['ban_until'];
+            if ($ban_until > time()) {
+                return array('allowed' => false, 'reason' => 'Banned until ' . self::format_datetime($ban_until));
+            }
         }
-        if (!empty($row['ban_permanent'])) {
-            return array('allowed' => false, 'reason' => 'Permanently banned');
+
+        // Niciun ban exact activ => verificam si un eventual ban pe subnet (CIDR).
+        $reason = '';
+        if (self::cidr_ban_match($ip, $reason)) {
+            return array('allowed' => false, 'reason' => $reason);
         }
-        $ban_until = (int) $row['ban_until'];
-        if ($ban_until > time()) {
-            return array('allowed' => false, 'reason' => 'Banned until ' . self::format_datetime($ban_until));
+        return array('allowed' => true, 'reason' => 'No active rule');
+    }
+
+    /**
+     * Potrivire cu un ban pe subnet (CIDR) din tabela IP. Cache per request.
+     *
+     * @param string $ip
+     * @param string $reason
+     * @return bool
+     */
+    private static function cidr_ban_match($ip, &$reason) {
+        static $cidr_bans = null;
+        if ($cidr_bans === null) {
+            global $wpdb;
+            $rows = $wpdb->get_results(
+                "SELECT ip, ban_until, ban_permanent FROM " . self::table_ip() . " WHERE status = 'ban' AND ip LIKE '%/%'",
+                ARRAY_A
+            );
+            $cidr_bans = is_array($rows) ? $rows : array();
         }
-        return array('allowed' => true, 'reason' => 'Ban expired');
+        foreach ($cidr_bans as $row) {
+            if (!self::ip_in_cidr($ip, $row['ip'])) {
+                continue;
+            }
+            if (!empty($row['ban_permanent'])) {
+                $reason = 'Permanently banned (subnet ' . $row['ip'] . ')';
+                return true;
+            }
+            $until = (int) $row['ban_until'];
+            if ($until > time()) {
+                $reason = 'Banned until ' . self::format_datetime($until) . ' (subnet ' . $row['ip'] . ')';
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Calculeaza reteaua CIDR pentru un IP (ex. /24 la IPv4, /64 la IPv6).
+     * @return string "x.x.x.0/24" sau '' la eroare.
+     */
+    private static function subnet_cidr($ip, $bits) {
+        $packed = @inet_pton($ip);
+        if ($packed === false) {
+            return '';
+        }
+        $len = strlen($packed);
+        $bits = ($len === 4) ? max(8, min(32, (int) $bits)) : max(16, min(128, (int) $bits));
+        $full_bytes = intdiv($bits, 8);
+        $rem = $bits % 8;
+        $mask = str_repeat("\xff", $full_bytes);
+        if ($rem > 0) {
+            $mask .= chr(0xff << (8 - $rem));
+        }
+        $mask = str_pad($mask, $len, "\x00");
+        $network = $packed & $mask;
+        return inet_ntop($network) . '/' . $bits;
+    }
+
+    /** True daca valoarea e un CIDR valid (ex. 45.138.12.0/24 sau 2a02::/64). */
+    private static function is_cidr($value) {
+        $value = (string) $value;
+        if (strpos($value, '/') === false) {
+            return false;
+        }
+        list($net, $bits) = explode('/', $value, 2);
+        if (!filter_var($net, FILTER_VALIDATE_IP)) {
+            return false;
+        }
+        $max = (strpos($net, ':') !== false) ? 128 : 32;
+        $bits = (int) $bits;
+        return ($bits >= 0 && $bits <= $max);
+    }
+
+    /**
+     * Baneaza un intreg subnet (CIDR). Nu aplica recidiva (durata fixa).
+     */
+    private function ban_subnet($network, $seconds, $source = 'manual') {
+        if (!self::is_cidr($network)) {
+            return false;
+        }
+        $source = ($source === 'auto') ? 'auto' : 'manual';
+        global $wpdb;
+        $table = self::table_ip();
+        $now = time();
+        $permanent = ((int) $seconds <= 0);
+
+        if ($permanent) {
+            $wpdb->query($wpdb->prepare(
+                "INSERT INTO {$table} (ip, status, ban_until, ban_permanent, ban_count, source, updated_at)
+                 VALUES (%s, 'ban', NULL, 1, 1, %s, %d)
+                 ON DUPLICATE KEY UPDATE
+                   status = 'ban', ban_until = NULL, ban_permanent = 1, ban_count = ban_count + 1,
+                   source = VALUES(source), updated_at = VALUES(updated_at)",
+                $network, $source, $now
+            ));
+        } else {
+            $wpdb->query($wpdb->prepare(
+                "INSERT INTO {$table} (ip, status, ban_until, ban_permanent, ban_count, source, updated_at)
+                 VALUES (%s, 'ban', %d, 0, 1, %s, %d)
+                 ON DUPLICATE KEY UPDATE
+                   status = 'ban', ban_until = VALUES(ban_until), ban_permanent = 0, ban_count = ban_count + 1,
+                   source = VALUES(source), updated_at = VALUES(updated_at)",
+                $network, $now + (int) $seconds, $source, $now
+            ));
+        }
+        return true;
     }
 
     private function block_access($reason) {
@@ -590,6 +759,9 @@ class WebGuardAI {
         if (!$this->should_scan_surface($surface, $settings)) {
             return;
         }
+
+        // Rate limiting per IP (poate bloca cererea curenta).
+        $this->enforce_rate_limit($settings);
 
         $event = $this->classify_request();
         if ($event === null) {
@@ -729,6 +901,16 @@ class WebGuardAI {
             return array('sql_injection', 'input');
         }
 
+        // 2b) XSS (query + body + cookie)
+        if (preg_match(self::XSS_PATTERN, $inputs)) {
+            return array('xss', 'input');
+        }
+
+        // 2c) command injection (query + body + cookie)
+        if (preg_match(self::CMDI_PATTERN, $inputs)) {
+            return array('command_injection', 'input');
+        }
+
         // 3) brute force (xmlrpc)
         if ($method === 'POST' && strpos(strtolower($path), 'xmlrpc.php') !== false) {
             return array('brute_force', 'xmlrpc');
@@ -805,6 +987,12 @@ class WebGuardAI {
         }
         if ($category === 'sql_injection') {
             return !empty($s['block_sqli']);
+        }
+        if ($category === 'xss') {
+            return !empty($s['block_xss']);
+        }
+        if ($category === 'command_injection') {
+            return !empty($s['block_cmd']);
         }
         return false;
     }
@@ -975,6 +1163,64 @@ class WebGuardAI {
         }
     }
 
+    /**
+     * Rate limiting per IP: daca un IP depaseste pragul de cereri intr-o fereastra,
+     * este banat temporar, iar cererea curenta este blocata (403).
+     * Randurile de rate folosesc statusul 'rate' (nu 'watch'), ca sa nu se amestece
+     * cu incercarile de login esuate.
+     */
+    private function enforce_rate_limit($settings) {
+        $max = (int) ($settings['rate_max'] ?? 0);
+        if ($max <= 0) {
+            return;
+        }
+        if ($this->is_exempt()) {
+            return;
+        }
+        $ip = $this->get_client_ip();
+        if ($ip === '' || !filter_var($ip, FILTER_VALIDATE_IP) || $this->is_loopback_ip($ip)) {
+            return;
+        }
+        $this->maybe_install();
+
+        global $wpdb;
+        $table = self::table_ip();
+        $now = time();
+        $window = max(10, (int) ($settings['rate_window'] ?? 60));
+        $win_start = $now - $window;
+
+        // Upsert atomic: reseteaza fereastra daca a expirat, altfel incrementeaza.
+        $wpdb->query($wpdb->prepare(
+            "INSERT INTO {$table} (ip, status, req_count, req_window, updated_at)
+             VALUES (%s, 'rate', 1, %d, %d)
+             ON DUPLICATE KEY UPDATE
+               req_count = IF(req_window < %d, 1, req_count + 1),
+               req_window = IF(req_window < %d, %d, req_window),
+               updated_at = VALUES(updated_at)",
+            $ip, $now, $now, $win_start, $win_start, $now, $now
+        ));
+
+        $row = $wpdb->get_row($wpdb->prepare(
+            "SELECT status, req_count, req_window FROM {$table} WHERE ip = %s LIMIT 1",
+            $ip
+        ), ARRAY_A);
+        if (!is_array($row)) {
+            return;
+        }
+        $status = (string) ($row['status'] ?? '');
+        if ($status === 'whitelist' || $status === 'ban') {
+            return;
+        }
+        if ((int) $row['req_window'] < $win_start) {
+            return; // fereastra expirata, contorul tocmai a fost resetat
+        }
+        if ((int) $row['req_count'] > $max) {
+            $this->log_event('rate_limit', (int) $row['req_count'] . ' cereri/' . $window . 's', 403);
+            $this->ban_ip($ip, max(0, (int) ($settings['ban_seconds'] ?? 3600)), 'auto', true);
+            $this->send_forbidden();
+        }
+    }
+
     /* ---------------------------------------------------------------------
      * Manual mutations
      * ------------------------------------------------------------------- */
@@ -1079,7 +1325,7 @@ class WebGuardAI {
     }
 
     private function remove_ip($ip) {
-        if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+        if (!filter_var($ip, FILTER_VALIDATE_IP) && !self::is_cidr($ip)) {
             return false;
         }
         global $wpdb;
@@ -1103,6 +1349,11 @@ class WebGuardAI {
         ));
         $wpdb->query($wpdb->prepare(
             "DELETE FROM " . self::table_ip() . " WHERE status = 'watch' AND updated_at < %d",
+            $now - ($window * 4)
+        ));
+        // Randurile de rate limiting (vizitatori obisnuiti) - curatate agresiv.
+        $wpdb->query($wpdb->prepare(
+            "DELETE FROM " . self::table_ip() . " WHERE status = 'rate' AND updated_at < %d",
             $now - ($window * 4)
         ));
 
@@ -1385,6 +1636,9 @@ class WebGuardAI {
         add_submenu_page(self::MENU_SLUG, 'Brute Force', 'Brute Force', 'manage_options', 'webguard-events-brute', array($this, 'events_brute_force'));
         add_submenu_page(self::MENU_SLUG, 'Scanner / Probing', 'Scanner / Probing', 'manage_options', 'webguard-events-scanner', array($this, 'events_scanner'));
         add_submenu_page(self::MENU_SLUG, 'SQL Injection', 'SQL Injection', 'manage_options', 'webguard-events-sqli', array($this, 'events_sqli'));
+        add_submenu_page(self::MENU_SLUG, 'XSS', 'XSS', 'manage_options', 'webguard-events-xss', array($this, 'events_xss'));
+        add_submenu_page(self::MENU_SLUG, 'Command Injection', 'Command Injection', 'manage_options', 'webguard-events-cmd', array($this, 'events_command_injection'));
+        add_submenu_page(self::MENU_SLUG, 'Rate Limit', 'Rate Limit', 'manage_options', 'webguard-events-rate', array($this, 'events_rate_limit'));
     }
 
     public function admin_assets($hook) {
@@ -1395,7 +1649,7 @@ class WebGuardAI {
             'webguard-admin',
             plugins_url('assets/admin.js', __FILE__),
             array(),
-            '2026.10.18',
+            '2026.10.18.2',
             true
         );
         wp_localize_script('webguard-admin', 'WebGuardAdmin', array(
@@ -1464,6 +1718,9 @@ class WebGuardAI {
     public function events_brute_force()    { $this->render_events_page('brute_force'); }
     public function events_scanner()        { $this->render_events_page('scanner_probing'); }
     public function events_sqli()           { $this->render_events_page('sql_injection'); }
+    public function events_xss()            { $this->render_events_page('xss'); }
+    public function events_command_injection() { $this->render_events_page('command_injection'); }
+    public function events_rate_limit()     { $this->render_events_page('rate_limit'); }
 
     private function render_events_page($category) {
         if (!current_user_can('manage_options')) {
@@ -1476,12 +1733,81 @@ class WebGuardAI {
         $this->maybe_install();
         $this->cleanup();
 
-        $rows = $this->get_events($category);
+        $search   = isset($_GET['wg_q']) ? sanitize_text_field(wp_unslash($_GET['wg_q'])) : '';
+        $filter   = isset($_GET['wg_f']) ? sanitize_key(wp_unslash($_GET['wg_f'])) : '';
+        $per_page = 50;
+        $paged    = isset($_GET['wg_p']) ? max(1, absint($_GET['wg_p'])) : 1;
+
+        $result = $this->query_events($category, array(
+            'search'   => $search,
+            'filter'   => $filter,
+            'per_page' => $per_page,
+            'paged'    => $paged,
+        ));
+        $rows = $result['rows'];
+        $pages = $result['pages'];
+        $paged = $result['paged'];
+        $filtered_total = $result['total'];
+
         $category_label = self::CATEGORIES[$category];
         $settings = $this->settings();
         $counts = $this->get_event_counts();
 
         include plugin_dir_path(__FILE__) . 'templates/events.php';
+    }
+
+    /**
+     * Interogheaza evenimentele cu cautare/filtrare/paginare.
+     *
+     * @param string $category
+     * @param array  $args search, filter(all|banned), per_page, paged
+     * @return array rows, total, pages, paged
+     */
+    public function query_events($category, $args = array()) {
+        global $wpdb;
+        $search   = isset($args['search']) ? trim((string) $args['search']) : '';
+        $filter   = isset($args['filter']) ? (string) $args['filter'] : '';
+        $per_page = isset($args['per_page']) ? max(1, (int) $args['per_page']) : 50;
+        $paged    = isset($args['paged']) ? max(1, (int) $args['paged']) : 1;
+
+        $where  = "category = %s";
+        $params = array($category);
+        if ($search !== '') {
+            $like = '%' . $wpdb->esc_like($search) . '%';
+            $where .= " AND (ip LIKE %s OR uri LIKE %s OR user_agent LIKE %s OR detail LIKE %s)";
+            $params[] = $like;
+            $params[] = $like;
+            $params[] = $like;
+            $params[] = $like;
+        }
+        if ($filter === 'banned') {
+            $where .= " AND EXISTS (SELECT 1 FROM " . self::table_ip() . " b WHERE b.ip = " . self::table_events() . ".ip AND b.status = 'ban')";
+        }
+
+        // Total pentru paginare.
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $where e construit doar din placeholders.
+        $total = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM " . self::table_events() . " WHERE {$where}",
+            $params
+        ));
+
+        $offset = ($paged - 1) * $per_page;
+        $params_page = array_merge($params, array($per_page, $offset));
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $where e construit doar din placeholders.
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT ip, method, uri, user_agent, status_code, detail, hits, first_seen, last_seen
+             FROM " . self::table_events() . "
+             WHERE {$where} ORDER BY last_seen DESC LIMIT %d OFFSET %d",
+            $params_page
+        ), ARRAY_A);
+
+        return array(
+            'rows'  => is_array($rows) ? $rows : array(),
+            'total' => $total,
+            'pages' => (int) ceil($total / $per_page),
+            'paged' => $paged,
+            'per_page' => $per_page,
+        );
     }
 
     /**
@@ -1528,6 +1854,7 @@ class WebGuardAI {
             . $nonce
             . '<button type="submit" name="webguard_type" value="temporary" class="button button-small">' . esc_html($temp_label) . '</button> '
             . '<button type="submit" name="webguard_type" value="permanent" class="button button-small">Permanent</button>'
+            . '<label style="display:block;font-size:10px;color:#646970;margin-top:2px"><input type="checkbox" name="webguard_subnet" value="1"> /24</label>'
             . '</form>';
     }
 
@@ -1571,6 +1898,25 @@ class WebGuardAI {
                 $map[$r['ip']] = $r;
             }
         }
+        // Banuri pe subnet (CIDR): un IP poate fi acoperit de un interval banat.
+        $cidr = $wpdb->get_results(
+            "SELECT ip, ban_until, ban_permanent FROM " . self::table_ip() . " WHERE status = 'ban' AND ip LIKE '%/%'",
+            ARRAY_A
+        );
+        if (is_array($cidr) && !empty($cidr)) {
+            foreach ($clean as $ip) {
+                if (isset($map[$ip])) {
+                    continue;
+                }
+                foreach ($cidr as $c) {
+                    if (self::ip_in_cidr($ip, $c['ip'])) {
+                        $c['subnet'] = $c['ip'];
+                        $map[$ip] = $c;
+                        break;
+                    }
+                }
+            }
+        }
         return $map;
     }
 
@@ -1580,13 +1926,18 @@ class WebGuardAI {
             return '<span style="color:#a7aaad">&mdash;</span>';
         }
         $row = $map[$ip];
+        $subnet = isset($row['subnet']) ? (string) $row['subnet'] : '';
         if (!empty($row['ban_permanent'])) {
-            return '<span style="color:#d63638;font-weight:600" title="Ban permanent">Permanent</span>';
+            $label = ($subnet !== '') ? 'Subnet permanent' : 'Permanent';
+            $title = ($subnet !== '') ? 'Ban permanent pe intervalul ' . $subnet : 'Ban permanent';
+            return '<span style="color:#d63638;font-weight:600" title="' . esc_attr($title) . '">' . esc_html($label) . '</span>';
         }
         $until = (int) $row['ban_until'];
         if ($until > time()) {
-            return '<span style="color:#d63638;font-weight:600" title="Ban pana la '
-                . esc_attr(self::format_datetime($until)) . '">Temporar ' . esc_html(self::human_duration($until - time())) . '</span>';
+            $dur = self::human_duration($until - time());
+            $label = ($subnet !== '') ? 'Subnet ' . $dur : 'Temporar ' . $dur;
+            $title = 'Ban pana la ' . self::format_datetime($until) . ($subnet !== '' ? ' (interval ' . $subnet . ')' : '');
+            return '<span style="color:#d63638;font-weight:600" title="' . esc_attr($title) . '">' . esc_html($label) . '</span>';
         }
         return '<span style="color:#a7aaad">&mdash;</span>';
     }
@@ -1627,10 +1978,19 @@ class WebGuardAI {
             wp_send_json_error('bad_category', 400);
         }
 
-        $rows = $this->get_events($category);
+        $search = isset($_POST['search']) ? sanitize_text_field(wp_unslash($_POST['search'])) : '';
+        $filter = isset($_POST['filter']) ? sanitize_key(wp_unslash($_POST['filter'])) : '';
+        $paged  = isset($_POST['paged']) ? max(1, absint($_POST['paged'])) : 1;
+
+        $result = $this->query_events($category, array(
+            'search'   => $search,
+            'filter'   => $filter,
+            'per_page' => 50,
+            'paged'    => $paged,
+        ));
         wp_send_json_success(array(
-            'html'  => $this->render_event_rows($rows, $category),
-            'count' => count($rows),
+            'html'  => $this->render_event_rows($result['rows'], $category),
+            'count' => count($result['rows']),
         ));
     }
 
@@ -1699,6 +2059,10 @@ class WebGuardAI {
             'block_sensitive' => isset($_POST['block_sensitive']) ? 1 : 0,
             'block_scanner'   => isset($_POST['block_scanner']) ? 1 : 0,
             'block_sqli'      => isset($_POST['block_sqli']) ? 1 : 0,
+            'block_xss'       => isset($_POST['block_xss']) ? 1 : 0,
+            'block_cmd'       => isset($_POST['block_cmd']) ? 1 : 0,
+            'rate_max'        => isset($_POST['rate_max']) ? max(0, absint($_POST['rate_max'])) : 0,
+            'rate_window'     => isset($_POST['rate_window']) ? max(10, absint($_POST['rate_window'])) : 60,
             'auto_ban_events' => isset($_POST['auto_ban_events']) ? max(0, absint($_POST['auto_ban_events'])) : 0,
             'retention_days'  => isset($_POST['retention_days']) ? max(1, absint($_POST['retention_days'])) : 30,
             'auto_refresh'    => isset($_POST['auto_refresh']) ? 1 : 0,
@@ -1762,6 +2126,7 @@ class WebGuardAI {
         $ip     = isset($_POST['webguard_ip']) ? sanitize_text_field(wp_unslash($_POST['webguard_ip'])) : '';
         $type   = isset($_POST['webguard_type']) ? sanitize_key(wp_unslash($_POST['webguard_type'])) : 'temporary';
         $return = isset($_POST['webguard_return']) ? esc_url_raw(wp_unslash($_POST['webguard_return'])) : '';
+        $subnet = !empty($_POST['webguard_subnet']);
         $default_seconds = max(60, (int) ($this->settings()['ban_seconds'] ?? 3600));
         $seconds = isset($_POST['webguard_seconds']) ? absint($_POST['webguard_seconds']) : $default_seconds;
 
@@ -1773,14 +2138,31 @@ class WebGuardAI {
         if ($type === 'whitelist') {
             $this->whitelist_ip($ip);
             $this->redirect_back('ip_whitelisted', $return, array('wg_ip' => $ip));
-        } elseif ($type === 'permanent') {
+        }
+
+        // Ban pe subnet (/24 IPv4 sau /64 IPv6), daca e bifat.
+        if ($subnet) {
+            $bits = (strpos($ip, ':') !== false) ? 64 : 24;
+            $network = self::subnet_cidr($ip, $bits);
+            if ($network === '') {
+                $this->redirect_back('invalid_ip', $return);
+            }
+            if ($type === 'permanent') {
+                $this->ban_subnet($network, 0);
+                $this->redirect_back('subnet_banned_perm', $return, array('wg_ip' => $network));
+            }
+            $seconds = ($seconds > 0) ? $seconds : 3600;
+            $this->ban_subnet($network, $seconds);
+            $this->redirect_back('subnet_banned_temp', $return, array('wg_ip' => $network, 'wg_dur' => self::human_duration($seconds)));
+        }
+
+        if ($type === 'permanent') {
             $this->ban_ip($ip, 0);
             $this->redirect_back('ip_banned_perm', $return, array('wg_ip' => $ip));
-        } else {
-            $seconds = ($seconds > 0) ? $seconds : 3600;
-            $this->ban_ip($ip, $seconds);
-            $this->redirect_back('ip_banned_temp', $return, array('wg_ip' => $ip, 'wg_dur' => self::human_duration($seconds)));
         }
+        $seconds = ($seconds > 0) ? $seconds : 3600;
+        $this->ban_ip($ip, $seconds);
+        $this->redirect_back('ip_banned_temp', $return, array('wg_ip' => $ip, 'wg_dur' => self::human_duration($seconds)));
     }
 
     public function admin_post_remove_ip() {
@@ -1815,6 +2197,82 @@ class WebGuardAI {
         $this->verify_admin_request('webguard_ingest_log');
         $this->ingest_access_log(true);
         $this->redirect_back('log_imported');
+    }
+
+    /**
+     * Export CSV: evenimente (pe categorie, cu filtre) / banuri / whitelist.
+     * URL: admin-post.php?action=webguard_export&what=events&category=...
+     */
+    public function admin_post_export() {
+        if (!current_user_can('manage_options')) {
+            wp_die('Access denied', 403);
+        }
+        check_admin_referer('webguard_export');
+
+        $what = isset($_GET['what']) ? sanitize_key(wp_unslash($_GET['what'])) : 'events';
+
+        nocache_headers();
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename=webguard-' . $what . '-' . wp_date('Ymd-His') . '.csv');
+
+        $out = fopen('php://output', 'w');
+        // BOM ca Excel sa recunoasca UTF-8.
+        fwrite($out, "\xEF\xBB\xBF");
+
+        if ($what === 'events') {
+            $category = isset($_GET['category']) ? sanitize_key(wp_unslash($_GET['category'])) : '';
+            if (!isset(self::CATEGORIES[$category])) {
+                fclose($out);
+                wp_die('bad category');
+            }
+            $search = isset($_GET['wg_q']) ? sanitize_text_field(wp_unslash($_GET['wg_q'])) : '';
+            $filter = isset($_GET['wg_f']) ? sanitize_key(wp_unslash($_GET['wg_f'])) : '';
+            fputcsv($out, array('Ultima', 'IP', 'Metoda', 'URI', 'Cod', 'User-Agent', 'Hits', 'Prima aparitie', 'Detaliu'));
+            $result = $this->query_events($category, array(
+                'search'   => $search,
+                'filter'   => $filter,
+                'per_page' => 50000,
+                'paged'    => 1,
+            ));
+            foreach ($result['rows'] as $r) {
+                fputcsv($out, array(
+                    self::format_datetime($r['last_seen']),
+                    $r['ip'],
+                    $r['method'],
+                    $r['uri'],
+                    $r['status_code'],
+                    $r['user_agent'],
+                    $r['hits'],
+                    self::format_datetime($r['first_seen']),
+                    $r['detail'],
+                ));
+            }
+        } elseif ($what === 'bans') {
+            fputcsv($out, array('IP/Interval', 'Tip', 'Sursa', 'Expira', 'Stare', 'Nr. ban-uri'));
+            $now = time();
+            foreach ($this->get_banlist_data() as $e) {
+                $permanent = !empty($e['ban_permanent']);
+                if ($permanent) {
+                    $tip = 'Permanent';
+                    $expira = 'Niciodata';
+                    $stare = 'Activ';
+                } else {
+                    $tip = 'Temporar';
+                    $until = (int) $e['ban_until'];
+                    $expira = $until > 0 ? self::format_datetime($until) : 'Nesetat';
+                    $stare = ($until > 0 && $now < $until) ? 'Activ' : 'Expirat';
+                }
+                fputcsv($out, array($e['ip'], $tip, ($e['source'] === 'auto' ? 'Automat' : 'Manual'), $expira, $stare, (int) $e['ban_count']));
+            }
+        } elseif ($what === 'whitelist') {
+            fputcsv($out, array('Adresa IP', 'Adaugat la'));
+            foreach ($this->get_whitelist_data() as $e) {
+                fputcsv($out, array($e['ip'], !empty($e['updated_at']) ? self::format_datetime($e['updated_at']) : '-'));
+            }
+        }
+
+        fclose($out);
+        exit;
     }
 
     /* ---------------------------------------------------------------------
@@ -1862,6 +2320,15 @@ class WebGuardAI {
             )),
             'ip_whitelisted' => array('success', sprintf(
                 '%s a fost adaugata in whitelist (nu va fi blocata).',
+                $ip_html
+            )),
+            'subnet_banned_temp' => array('success', sprintf(
+                'Ban pe interval aplicat: %s este blocat pentru %s. Banul expira automat.',
+                $ip_html,
+                esc_html($dur !== '' ? $dur : 'durata configurata')
+            )),
+            'subnet_banned_perm' => array('success', sprintf(
+                'Ban pe interval aplicat: %s este blocat permanent. Nu expira automat; se ridica manual din Ban List.',
                 $ip_html
             )),
         );

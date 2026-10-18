@@ -24,6 +24,9 @@ $event_pages = array(
     'brute_force'     => 'webguard-events-brute',
     'scanner_probing' => 'webguard-events-scanner',
     'sql_injection'   => 'webguard-events-sqli',
+    'xss'             => 'webguard-events-xss',
+    'command_injection' => 'webguard-events-cmd',
+    'rate_limit'      => 'webguard-events-rate',
 );
 
 /**
@@ -131,6 +134,16 @@ $wg_help = function ($text) {
                     Raspunde 403 la pattern-uri de SQLi in parametri</label></td>
             </tr>
             <tr>
+                <th scope="row">Blocheaza XSS<?php $wg_help('Răspunde cu 403 cererilor care conțin tipare de cross-site scripting (scripturi injectate, atribute de eveniment precum onerror, javascript: sau iframe). Previne executarea de cod în browserul vizitatorilor. Dezactivează dacă observi fals-pozitive pe formulare cu text tehnic.'); ?></th>
+                <td><label><input type="checkbox" name="block_xss" value="1" <?php checked(!empty($settings['block_xss'])); ?>>
+                    Raspunde 403 la pattern-uri de XSS in parametri</label></td>
+            </tr>
+            <tr>
+                <th scope="row">Blocheaza command injection<?php $wg_help('Răspunde cu 403 cererilor care conțin tipare de injecție de comenzi (pipe-uri către cat, wget, bash, backtick-uri sau căi precum /etc/passwd). Împiedică executarea de comenzi pe server. Este o protecție suplimentară, ține-o activă dacă nu folosești astfel de parametri în mod legitim.'); ?></th>
+                <td><label><input type="checkbox" name="block_cmd" value="1" <?php checked(!empty($settings['block_cmd'])); ?>>
+                    Raspunde 403 la pattern-uri de command injection</label></td>
+            </tr>
+            <tr>
                 <th scope="row">Toate suprafețele site-ului<?php $wg_help('Extinde inspecția și la wp-admin, admin-ajax.php și punctele REST (/wp-json/), nu doar la partea publică a site-ului. Astfel sunt acoperite toate suprafețele expuse. Poate genera mai multe evenimente, dar oferă protecție completă.'); ?></th>
                 <td><label><input type="checkbox" name="scan_all_surfaces" value="1" <?php checked(!empty($settings['scan_all_surfaces'])); ?>>
                     Inspecteaza si wp-admin, admin-ajax.php si REST (/wp-json/), nu doar front-end</label></td>
@@ -156,6 +169,22 @@ $wg_help = function ($text) {
                 <td><input type="number" min="0" step="1" id="webguard-scanner-ban-after" name="scanner_ban_after"
                         value="<?php echo esc_attr($settings['scanner_ban_after'] ?? 10); ?>" class="small-text">
                     <p class="description">Categoria scanner/probing baneaza abia dupa atatea evenimente (mai blând decat brute-force/SQLi). 0 = niciodata.</p></td>
+            </tr>
+        </table>
+
+        <h3>Rate limiting (trafic excesiv)</h3>
+        <table class="form-table" role="presentation">
+            <tr>
+                <th scope="row"><label for="webguard-rate-max">Cereri maxime intr-o fereastra</label><?php $wg_help('Numărul maxim de cereri acceptate de la aceeași adresă IP într-o fereastră de timp. Când este depășit, IP-ul este banat automat. Valoarea 0 dezactivează rate limiting-ul complet. Recomandat 120-240 pentru un site normal.'); ?></th>
+                <td><input type="number" min="0" step="1" id="webguard-rate-max" name="rate_max"
+                        value="<?php echo esc_attr($settings['rate_max'] ?? 0); ?>" class="small-text">
+                    <p class="description">0 = dezactivat. Ex: 240 cereri / 60 secunde.</p></td>
+            </tr>
+            <tr>
+                <th scope="row"><label for="webguard-rate-window">Fereastra rate limiting (secunde)</label><?php $wg_help('Intervalul de timp, în secunde, în care se numără cererile de la un IP pentru rate limiting. Când fereastra expiră, contorul repornește de la zero. De obicei 60 de secunde este suficient.'); ?></th>
+                <td><input type="number" min="10" step="10" id="webguard-rate-window" name="rate_window"
+                        value="<?php echo esc_attr($settings['rate_window'] ?? 60); ?>" class="small-text">
+                    <p class="description">Durata ferestrei de numarare, in secunde.</p></td>
             </tr>
         </table>
 
@@ -288,6 +317,7 @@ $wg_help = function ($text) {
                                 <input type="hidden" name="webguard_type" value="permanent">
                                 <?php wp_nonce_field('webguard_add_ip', '_wpnonce', false); ?>
                                 <button type="submit" class="button button-small">Ban permanent</button>
+                                <label style="margin-left:6px;font-size:11px"><input type="checkbox" name="webguard_subnet" value="1"> /24</label>
                             </form>
                         </td>
                     </tr>

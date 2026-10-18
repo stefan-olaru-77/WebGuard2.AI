@@ -16,9 +16,16 @@
             return;
         }
 
+        var search = table.getAttribute('data-search') || '';
+        var filter = table.getAttribute('data-filter') || '';
+        var paged = table.getAttribute('data-paged') || '1';
+
         var body = 'action=webguard_events'
             + '&nonce=' + encodeURIComponent(cfg.nonce)
-            + '&category=' + encodeURIComponent(category);
+            + '&category=' + encodeURIComponent(category)
+            + '&search=' + encodeURIComponent(search)
+            + '&filter=' + encodeURIComponent(filter)
+            + '&paged=' + encodeURIComponent(paged);
 
         window.fetch(cfg.ajaxUrl, {
             method: 'POST',

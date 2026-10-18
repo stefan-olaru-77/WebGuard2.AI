@@ -1,13 +1,15 @@
 # WebGuard.AI
 
-Plugin WordPress de securitate: firewall de aplicație + detectare și raportare locală a atacurilor. Blochează la nivel de site și ține evidența evenimentelor de tip **file-injection**, **brute-force**, **scanner-probing** și **SQL-injection**.
+Plugin WordPress de securitate: firewall de aplicație + detectare și raportare locală a atacurilor. Blochează la nivel de site și ține evidența evenimentelor de tip **file-injection**, **brute-force**, **scanner-probing**, **SQL-injection**, **XSS** și **command-injection**.
 
 ## Ce face
 
-- Detectează 4 categorii de atacuri: expunere fișiere sensibile, brute-force (login + Application Passwords), scanare/probing, injecție SQL (inclusiv în corp JSON și cookie-uri).
+- Detectează 7 categorii de atacuri: expunere fișiere sensibile, brute-force (login + Application Passwords), scanare/probing, injecție SQL (inclusiv în corp JSON și cookie-uri), XSS și injecție de comenzi.
 - Blochează cererile periculoase (HTTP 403) pe **tot site-ul**: front-end, `wp-admin`, `admin-ajax.php` și REST.
-- Ban pe IP cu **escaladare la recidivă** (trepte configurabile) și **ban permanent** după N abateri.
-- Whitelist / ban list și **tabele live** în admin (refresh la 10 secunde).
+- **Rate limiting per IP** — ban automat la depășirea unui prag de cereri într-o fereastră (ex. 240/min).
+- Ban pe IP cu **escaladare la recidivă** (trepte configurabile) și **ban permanent** după N abateri; opțiune de a bana **tot intervalul** (/24 IPv4, /64 IPv6).
+- Whitelist / ban list și **tabele live** în admin (refresh la 10 secunde), cu **căutare, filtrare și paginare**.
+- **Export CSV** pentru evenimente, banuri și whitelist.
 - **Import din logul Apache** — prinde și cererile oprite la nivel de server, înainte de PHP.
 - **Cloudflare-aware**: folosește IP-ul real al clientului (`CF-Connecting-IP`, folosit doar când `REMOTE_ADDR` este o adresă Cloudflare verificată).
 - **Bypass prin cookie secret** pentru administratori cu IP dinamic (PPPoE).

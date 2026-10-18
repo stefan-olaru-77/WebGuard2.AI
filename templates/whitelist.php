@@ -21,6 +21,7 @@ $whitelist_data = isset($whitelist_data) && is_array($whitelist_data) ? $whiteli
     <div class="webguard-report">
         <div class="report-header">
             <p>Total IP-uri in whitelist: <strong><?php echo esc_html(count($whitelist_data)); ?></strong></p>
+            <a href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=webguard_export&what=whitelist'), 'webguard_export')); ?>" class="button">Export CSV</a>
             <a href="<?php echo esc_url(admin_url('admin.php?page=webguard-ai')); ?>" class="button">&larr; Inapoi la Dashboard</a>
         </div>
 

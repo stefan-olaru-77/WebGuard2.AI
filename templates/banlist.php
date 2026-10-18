@@ -23,6 +23,7 @@ $current_time = isset($current_time) ? (int) $current_time : time();
     <div class="webguard-report">
         <div class="report-header">
             <p>Total IP-uri banate: <strong><?php echo esc_html(count($banlist_data)); ?></strong></p>
+            <a href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=webguard_export&what=bans'), 'webguard_export')); ?>" class="button">Export CSV</a>
             <a href="<?php echo esc_url(admin_url('admin.php?page=webguard-ai')); ?>" class="button">&larr; Inapoi la Dashboard</a>
         </div>
 
@@ -38,6 +39,7 @@ $current_time = isset($current_time) ? (int) $current_time : time();
             </select>
             <input type="number" min="60" step="60" name="webguard_seconds" value="3600" class="small-text">
             <span class="description">secunde</span>
+            <label style="margin-left:10px"><input type="checkbox" name="webguard_subnet" value="1"> tot intervalul (/24)</label>
             <button type="submit" class="button button-primary">Adauga ban</button>
         </form>
 
