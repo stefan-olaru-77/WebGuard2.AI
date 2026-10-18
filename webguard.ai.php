@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WebGuard.AI
  * Description: Firewall + detectie si raportare locala: ban pe login, auto-ban, si capturarea evenimentelor de tip file-injection, brute-force, scanner-probing si sql-injection. Doua tabele proprii, pagini separate per tip de problema, tabele live in admin.
- * Version: 2026.10.18.3
+ * Version: 2026.10.18.4
  * Author: Atelierul de IT
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -514,6 +514,7 @@ class WebGuardAI {
 
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('admin_enqueue_scripts', array($this, 'admin_assets'));
+        add_action('wp_dashboard_setup', array($this, 'add_dashboard_widget'));
 
         add_action('admin_post_webguard_save_settings', array($this, 'admin_post_save_settings'));
         add_action('admin_post_webguard_add_ip', array($this, 'admin_post_add_ip'));
@@ -1620,6 +1621,23 @@ class WebGuardAI {
         return $counts;
     }
 
+    /**
+     * Top IP-uri dupa numarul de evenimente in ultimele 24h.
+     *
+     * @param int $limit
+     * @return array rows: ip, total
+     */
+    private function get_top_ips($limit = 5) {
+        global $wpdb;
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT ip, SUM(hits) AS total FROM " . self::table_events() . "
+             WHERE last_seen > %d GROUP BY ip ORDER BY total DESC LIMIT %d",
+            time() - DAY_IN_SECONDS,
+            max(1, (int) $limit)
+        ), ARRAY_A);
+        return is_array($rows) ? $rows : array();
+    }
+
     /* ---------------------------------------------------------------------
      * Admin menu
      * ------------------------------------------------------------------- */
@@ -1649,7 +1667,7 @@ class WebGuardAI {
             'webguard-admin',
             plugins_url('assets/admin.js', __FILE__),
             array(),
-            '2026.10.18.3',
+            '2026.10.18.4',
             true
         );
         wp_localize_script('webguard-admin', 'WebGuardAdmin', array(
@@ -1657,6 +1675,92 @@ class WebGuardAI {
             'nonce'    => wp_create_nonce('webguard_events'),
             'interval' => 10000,
         ));
+    }
+
+    /* ---------------------------------------------------------------------
+     * Widget in panoul de control WordPress (wp-admin/index.php)
+     * ------------------------------------------------------------------- */
+
+    public function add_dashboard_widget() {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+        wp_add_dashboard_widget('webguard_status', 'WebGuard.AI - Stare', array($this, 'render_dashboard_widget'));
+    }
+
+    /**
+     * Continutul widget-ului: aceleasi statistici ca Dashboard-ul pluginului.
+     */
+    public function render_dashboard_widget() {
+        $this->maybe_install();
+
+        $counts    = $this->get_event_counts();
+        $whitelist = $this->get_whitelist_data();
+        $banlist   = $this->get_banlist_data();
+
+        $auto_banned = 0;
+        foreach ($banlist as $rule) {
+            if (isset($rule['source']) && $rule['source'] === 'auto') {
+                $auto_banned++;
+            }
+        }
+
+        $top = $this->get_top_ips(5);
+        $ban_map = $this->get_ban_status_map(array_column($top, 'ip'));
+
+        $dashboard_url = admin_url('admin.php?page=' . self::MENU_SLUG);
+
+        echo '<style>
+            .wg-widget-stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+            .wg-widget-box { flex: 1 1 45%; border: 1px solid #dcdcde; border-radius: 4px; padding: 6px 8px; }
+            .wg-widget-box h4 { margin: 0 0 2px; font-size: 12px; color: #50575e; }
+            .wg-widget-box .n { font-size: 20px; font-weight: 700; }
+            .wg-widget-box .s { font-size: 11px; color: #646970; }
+            .wg-widget-firewall { margin: 0 0 10px; font-size: 13px; }
+            .wg-widget-firewall strong { font-size: 15px; }
+            .wg-widget-top { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+            .wg-widget-top th, .wg-widget-top td { text-align: left; padding: 3px 4px; border-bottom: 1px solid #f0f0f1; font-size: 12px; }
+            .wg-widget-top td.ip { font-family: monospace; }
+        </style>';
+
+        // Evenimente pe categorii.
+        echo '<div class="wg-widget-stats">';
+        foreach (self::CATEGORIES as $slug => $label) {
+            $total  = isset($counts[$slug]['total']) ? (int) $counts[$slug]['total'] : 0;
+            $recent = isset($counts[$slug]['recent']) ? (int) $counts[$slug]['recent'] : 0;
+            $page   = isset(self::CATEGORY_PAGE[$slug]) ? self::CATEGORY_PAGE[$slug] : self::MENU_SLUG;
+            $short  = explode('(', $label);
+            $short  = trim($short[0]);
+            echo '<div class="wg-widget-box">'
+                . '<h4><a href="' . esc_url(admin_url('admin.php?page=' . $page)) . '">' . esc_html($short) . '</a></h4>'
+                . '<span class="n">' . esc_html(number_format_i18n($total)) . '</span>'
+                . '<span class="s"> &middot; ' . esc_html(number_format_i18n($recent)) . ' in 24h</span>'
+                . '</div>';
+        }
+        echo '</div>';
+
+        // Stare firewall.
+        echo '<p class="wg-widget-firewall">'
+            . 'Reguli: <strong>' . esc_html(number_format_i18n(count($whitelist) + count($banlist))) . '</strong>'
+            . ' &middot; Whitelist: <strong>' . esc_html(number_format_i18n(count($whitelist))) . '</strong>'
+            . ' &middot; Banate: <strong>' . esc_html(number_format_i18n(count($banlist))) . '</strong>'
+            . ' &middot; Ban-uri automate: <strong>' . esc_html(number_format_i18n($auto_banned)) . '</strong>'
+            . '</p>';
+
+        // Top IP-uri dupa activitate (24h).
+        if (!empty($top)) {
+            echo '<table class="wg-widget-top"><thead><tr><th>Top IP (24h)</th><th>Hits</th><th>Ban</th></tr></thead><tbody>';
+            foreach ($top as $r) {
+                echo '<tr>'
+                    . '<td class="ip">' . esc_html($r['ip']) . '</td>'
+                    . '<td>' . esc_html(number_format_i18n((int) $r['total'])) . '</td>'
+                    . '<td>' . $this->ban_badge($r['ip'], $ban_map) . '</td>' // phpcs:ignore WordPress.Security.EscapeOutput
+                    . '</tr>';
+            }
+            echo '</tbody></table>';
+        }
+
+        echo '<p style="margin:0"><a class="button button-primary" href="' . esc_url($dashboard_url) . '">Deschide WebGuard.AI</a></p>';
     }
 
     /* ---------------------------------------------------------------------

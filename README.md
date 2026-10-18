@@ -8,6 +8,7 @@ Plugin WordPress de securitate: firewall de aplicație + detectare și raportare
 - **Ban pe IP** cu **escaladare la recidivă** (trepte configurabile) și **ban permanent** după N abateri.
 - **Ban pe subnet**: opțiune de a bloca tot intervalul (`/24` la IPv4, `/64` la IPv6), util pentru scanere distribuite.
 - **Rate limiting per IP**: ban automat când un IP depășește un prag de cereri într-o fereastră de timp (ex. 240 cereri / 60 s).
+- **Widget în panoul de control WordPress** (`wp-admin/index.php`) cu statusul pe scurt: evenimente pe categorii, reguli/whitelist/banuri, top IP-uri (24h) și link rapid către plugin.
 - **Whitelist / Ban List** și **tabele live** în admin (refresh la 10 secunde).
 - **Căutare, filtrare și paginare** în tabelele de evenimente; **Export CSV** pentru evenimente, banuri și whitelist.
 - Coloană **Ban** în toate tabelele cu IP-uri (mai puțin Ban List), care arată dacă IP-ul e banat: `Permanent`, `Temporar 5h:37m` sau `Subnet ...`.
