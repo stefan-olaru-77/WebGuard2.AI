@@ -44,15 +44,18 @@ $whitelist_data = isset($whitelist_data) && is_array($whitelist_data) ? $whiteli
                 <thead>
                     <tr>
                         <th>Adresa IP</th>
+                        <th>Ban</th>
                         <th>Adaugat la</th>
                         <th>Stare</th>
                         <th>Actiune</th>
                     </tr>
                 </thead>
                 <tbody>
+                <?php $wg_ban_map = $this->get_ban_status_map(wp_list_pluck($whitelist_data, 'ip')); ?>
                 <?php foreach ($whitelist_data as $entry) : ?>
                     <tr>
                         <td><?php echo esc_html($entry['ip']); ?></td>
+                        <td><?php echo $this->ban_badge($entry['ip'], $wg_ban_map); // phpcs:ignore WordPress.Security.EscapeOutput ?></td>
                         <td><?php echo esc_html(!empty($entry['updated_at']) ? WebGuardAI::format_datetime($entry['updated_at']) : '-'); ?></td>
                         <td><span class="status-whitelist">Whitelisted</span></td>
                         <td>

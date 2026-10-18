@@ -271,11 +271,13 @@ $wg_help = function ($text) {
         <div class="notice notice-info inline"><p>Nu exista incercari inregistrate in acest moment.</p></div>
     <?php else : ?>
         <table class="wp-list-table widefat fixed striped">
-            <thead><tr><th>IP</th><th>Incercari</th><th>Ultima incercare</th><th>Actiune</th></tr></thead>
+            <thead><tr><th>IP</th><th>Ban</th><th>Incercari</th><th>Ultima incercare</th><th>Actiune</th></tr></thead>
             <tbody>
+                <?php $wg_ban_map = $this->get_ban_status_map(wp_list_pluck($failed_data, 'ip')); ?>
                 <?php foreach ($failed_data as $row) : ?>
                     <tr>
                         <td><?php echo esc_html($row['ip']); ?></td>
+                        <td><?php echo $this->ban_badge($row['ip'], $wg_ban_map); // phpcs:ignore WordPress.Security.EscapeOutput ?></td>
                         <td><?php echo esc_html($row['attempts']); ?></td>
                         <td><?php echo esc_html(!empty($row['updated_at']) ? WebGuardAI::format_datetime($row['updated_at']) : '-'); ?></td>
                         <td>

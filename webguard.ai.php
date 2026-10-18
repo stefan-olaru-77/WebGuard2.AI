@@ -1491,10 +1491,12 @@ class WebGuardAI {
      */
     private function render_event_rows($rows, $category = '') {
         $out = '';
+        $ban_map = $this->get_ban_status_map(array_column($rows, 'ip'));
         foreach ($rows as $row) {
             $out .= '<tr>';
             $out .= '<td>' . esc_html(self::format_datetime($row['last_seen'])) . '</td>';
             $out .= '<td>' . esc_html($row['ip']) . '</td>';
+            $out .= '<td>' . $this->ban_badge($row['ip'], $ban_map) . '</td>';
             $out .= '<td>' . esc_html($row['hits']) . '</td>';
             $out .= '<td>' . esc_html($row['method']) . '</td>';
             $out .= '<td class="wg-uri">' . esc_html($row['uri']) . '</td>';
@@ -1505,7 +1507,7 @@ class WebGuardAI {
             $out .= '</tr>';
         }
         if ($out === '') {
-            $out = '<tr><td colspan="9"><em>Niciun eveniment inregistrat.</em></td></tr>';
+            $out = '<tr><td colspan="10"><em>Niciun eveniment inregistrat.</em></td></tr>';
         }
         return $out;
     }
@@ -1533,6 +1535,60 @@ class WebGuardAI {
     private function category_page_url($category) {
         $page = isset(self::CATEGORY_PAGE[$category]) ? self::CATEGORY_PAGE[$category] : self::MENU_SLUG;
         return admin_url('admin.php?page=' . $page);
+    }
+
+    /**
+     * Harta stare-ban pentru un set de IP-uri, intr-o singura interogare.
+     *
+     * @param array $ips
+     * @return array ip => array('ip','ban_until','ban_permanent')
+     */
+    public function get_ban_status_map(array $ips) {
+        $clean = array();
+        foreach ($ips as $ip) {
+            $ip = (string) $ip;
+            if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP)) {
+                $clean[$ip] = $ip;
+            }
+        }
+        if (empty($clean)) {
+            return array();
+        }
+        global $wpdb;
+        $clean = array_values($clean);
+        $placeholders = implode(',', array_fill(0, count($clean), '%s'));
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- doar placeholder-e.
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT ip, ban_until, ban_permanent FROM " . self::table_ip() . " WHERE status = 'ban' AND ip IN ({$placeholders})",
+                $clean
+            ),
+            ARRAY_A
+        );
+        $map = array();
+        if (is_array($rows)) {
+            foreach ($rows as $r) {
+                $map[$r['ip']] = $r;
+            }
+        }
+        return $map;
+    }
+
+    /** Badge HTML cu starea de ban a unui IP (sau liniuta daca nu e banat). */
+    public function ban_badge($ip, array $map) {
+        if (!isset($map[$ip])) {
+            return '<span style="color:#a7aaad">&mdash;</span>';
+        }
+        $row = $map[$ip];
+        if (!empty($row['ban_permanent'])) {
+            return '<span style="color:#d63638;font-weight:600" title="Ban permanent">Permanent</span>';
+        }
+        $until = (int) $row['ban_until'];
+        if ($until > time()) {
+            return '<span style="color:#d63638;font-weight:600" title="Ban pana la '
+                . esc_attr(self::format_datetime($until)) . '">Temporar ' . esc_html(self::human_duration($until - time())) . '</span>';
+        }
+        return '<span style="color:#a7aaad">&mdash;</span>';
     }
 
     /** Durata in format scurt ("1h", "6h", "7z", "permanent"). */

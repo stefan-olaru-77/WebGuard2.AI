@@ -50,6 +50,7 @@ $auto_refresh = !empty($settings['auto_refresh']);
                 <tr>
                     <th style="width:160px">Ultima</th>
                     <th style="width:130px">IP</th>
+                    <th style="width:110px">Ban</th>
                     <th style="width:60px">Hits</th>
                     <th style="width:60px">Metoda</th>
                     <th>URI</th>
