@@ -33,11 +33,12 @@ $wg_help = function ($text) {
     echo '<span class="wg-help" tabindex="0" role="button" aria-label="Ajutor"><span class="wg-help-mark">?</span><span class="wg-help-text">' . esc_html($text) . '</span></span>';
 };
 
-WebGuardAI::render_notice();
 ?>
 
 <div class="wrap">
     <h1><?php echo esc_html(get_admin_page_title()); ?></h1>
+
+    <?php WebGuardAI::render_notice(); ?>
 
     <h2>Evenimente detectate</h2>
     <div class="webguard-stats">
@@ -280,9 +281,10 @@ WebGuardAI::render_notice();
                         <td>
                             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                                 <input type="hidden" name="action" value="webguard_add_ip">
+                                <input type="hidden" name="webguard_return" value="<?php echo esc_url(admin_url('admin.php?page=webguard-ai')); ?>">
                                 <input type="hidden" name="webguard_ip" value="<?php echo esc_attr($row['ip']); ?>">
                                 <input type="hidden" name="webguard_type" value="permanent">
-                                <?php wp_nonce_field('webguard_add_ip'); ?>
+                                <?php wp_nonce_field('webguard_add_ip', '_wpnonce', false); ?>
                                 <button type="submit" class="button button-small">Ban permanent</button>
                             </form>
                         </td>

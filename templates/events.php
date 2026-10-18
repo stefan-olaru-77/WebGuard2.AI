@@ -19,11 +19,12 @@ $total = isset($counts[$category]['total']) ? (int) $counts[$category]['total'] 
 $recent = isset($counts[$category]['recent']) ? (int) $counts[$category]['recent'] : 0;
 $auto_refresh = !empty($settings['auto_refresh']);
 
-WebGuardAI::render_notice();
 ?>
 
 <div class="wrap">
     <h1><?php echo esc_html($category_label); ?></h1>
+
+    <?php WebGuardAI::render_notice(); ?>
 
     <div class="webguard-report">
         <div class="report-header">
@@ -59,7 +60,7 @@ WebGuardAI::render_notice();
                 </tr>
             </thead>
             <tbody>
-                <?php echo $this->render_event_rows($rows); // phpcs:ignore WordPress.Security.EscapeOutput ?>
+                <?php echo $this->render_event_rows($rows, $category); // phpcs:ignore WordPress.Security.EscapeOutput ?>
             </tbody>
         </table>
     </div>

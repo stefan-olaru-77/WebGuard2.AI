@@ -13,11 +13,12 @@ if (!defined('ABSPATH')) {
 $banlist_data = isset($banlist_data) && is_array($banlist_data) ? $banlist_data : array();
 $current_time = isset($current_time) ? (int) $current_time : time();
 
-WebGuardAI::render_notice();
 ?>
 
 <div class="wrap">
     <h1>WebGuard.AI - Ban List</h1>
+
+    <?php WebGuardAI::render_notice(); ?>
 
     <div class="webguard-report">
         <div class="report-header">
@@ -28,7 +29,8 @@ WebGuardAI::render_notice();
         <h2>Adauga un ban manual</h2>
         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
             <input type="hidden" name="action" value="webguard_add_ip">
-            <?php wp_nonce_field('webguard_add_ip'); ?>
+            <input type="hidden" name="webguard_return" value="<?php echo esc_url(admin_url('admin.php?page=webguard-banlist')); ?>">
+            <?php wp_nonce_field('webguard_add_ip', '_wpnonce', false); ?>
             <input type="text" name="webguard_ip" class="regular-text" placeholder="ex: 203.0.113.10" required>
             <select name="webguard_type">
                 <option value="temporary">Temporar</option>

@@ -36,6 +36,14 @@ class WebGuardAI {
         'sql_injection'   => 'SQL Injection',
     );
 
+    // Pagina de admin corespunzatoare fiecarei categorii (pentru redirect dupa actiuni).
+    const CATEGORY_PAGE = array(
+        'file_injection'  => 'webguard-events-file',
+        'brute_force'     => 'webguard-events-brute',
+        'scanner_probing' => 'webguard-events-scanner',
+        'sql_injection'   => 'webguard-events-sqli',
+    );
+
     /**
      * Cloudflare published proxy ranges (fallback only, kept in sync with
      * /etc/apache2/conf-enabled/remoteip-cloudflare.conf).
@@ -1469,7 +1477,7 @@ class WebGuardAI {
      * @param array $rows
      * @return string
      */
-    private function render_event_rows($rows) {
+    private function render_event_rows($rows, $category = '') {
         $out = '';
         foreach ($rows as $row) {
             $out .= '<tr>';
@@ -1481,7 +1489,7 @@ class WebGuardAI {
             $out .= '<td>' . esc_html($row['status_code']) . '</td>';
             $out .= '<td class="wg-ua">' . esc_html($row['user_agent']) . '</td>';
             $out .= '<td>' . esc_html($row['detail']) . '</td>';
-            $out .= '<td>' . $this->ban_button($row['ip']) . '</td>';
+            $out .= '<td>' . $this->ban_button($row['ip'], $category) . '</td>';
             $out .= '</tr>';
         }
         if ($out === '') {
@@ -1490,15 +1498,47 @@ class WebGuardAI {
         return $out;
     }
 
-    private function ban_button($ip) {
-        $url = esc_url(admin_url('admin-post.php'));
-        $nonce = wp_nonce_field('webguard_add_ip', '_wpnonce', true, false);
+    private function ban_button($ip, $category = '') {
+        $url    = esc_url(admin_url('admin-post.php'));
+        $return = $this->category_page_url($category);
+        // NU folosi _wp_http_referer automat: randurile sunt regenerate si prin
+        // admin-ajax.php, iar referer-ul de acolo ar redirectiona pagina spre
+        // admin-ajax.php (care raspunde "0"). Trimitem un URL de intoarcere explicit.
+        $nonce = wp_nonce_field('webguard_add_ip', '_wpnonce', false, false);
+        $temp_seconds = max(0, (int) ($this->settings()['ban_seconds'] ?? 3600));
+        $temp_label = 'Ban ' . self::human_duration($temp_seconds);
         return '<form method="post" action="' . $url . '" style="margin:0">'
             . '<input type="hidden" name="action" value="webguard_add_ip">'
-            . '<input type="hidden" name="webguard_type" value="permanent">'
+            . '<input type="hidden" name="webguard_return" value="' . esc_attr($return) . '">'
             . '<input type="hidden" name="webguard_ip" value="' . esc_attr($ip) . '">'
             . $nonce
-            . '<button type="submit" class="button button-small">Ban</button></form>';
+            . '<button type="submit" name="webguard_type" value="temporary" class="button button-small">' . esc_html($temp_label) . '</button> '
+            . '<button type="submit" name="webguard_type" value="permanent" class="button button-small">Permanent</button>'
+            . '</form>';
+    }
+
+    /** URL-ul paginii de admin pentru o categorie de evenimente. */
+    private function category_page_url($category) {
+        $page = isset(self::CATEGORY_PAGE[$category]) ? self::CATEGORY_PAGE[$category] : self::MENU_SLUG;
+        return admin_url('admin.php?page=' . $page);
+    }
+
+    /** Durata in format scurt ("1h", "6h", "7z", "permanent"). */
+    public static function human_duration($seconds) {
+        $seconds = (int) $seconds;
+        if ($seconds <= 0) {
+            return 'permanent';
+        }
+        if ($seconds >= DAY_IN_SECONDS && $seconds % DAY_IN_SECONDS === 0) {
+            return ($seconds / DAY_IN_SECONDS) . 'z';
+        }
+        if ($seconds >= HOUR_IN_SECONDS && $seconds % HOUR_IN_SECONDS === 0) {
+            return ($seconds / HOUR_IN_SECONDS) . 'h';
+        }
+        if ($seconds >= MINUTE_IN_SECONDS && $seconds % MINUTE_IN_SECONDS === 0) {
+            return ($seconds / MINUTE_IN_SECONDS) . 'min';
+        }
+        return $seconds . 's';
     }
 
     /* ---------------------------------------------------------------------
@@ -1517,7 +1557,7 @@ class WebGuardAI {
 
         $rows = $this->get_events($category);
         wp_send_json_success(array(
-            'html'  => $this->render_event_rows($rows),
+            'html'  => $this->render_event_rows($rows, $category),
             'count' => count($rows),
         ));
     }
@@ -1544,13 +1584,34 @@ class WebGuardAI {
         return empty($out) ? '3600,21600,86400,604800' : implode(',', $out);
     }
 
-    private function redirect_back($message) {
-        $target = wp_get_referer();
+    /**
+     * Redirectioneaza inapoi cu un mesaj.
+     *
+     * @param string $message          Cod de mesaj (vezi message_text()).
+     * @param string $explicit_target  URL explicit de intoarcere (validat).
+     * @param array  $extra            Argumente suplimentare adaugate in URL.
+     */
+    private function redirect_back($message, $explicit_target = '', $extra = array()) {
+        $target = '';
+        if ($explicit_target !== '') {
+            $target = wp_validate_redirect($explicit_target, '');
+        }
+        if ($target === '') {
+            $target = wp_get_referer();
+            // Rândurile reîncărcate live trimit referer-ul către admin-ajax.php,
+            // care ar afișa pagina "0". Îl ignorăm.
+            if (!$target || strpos($target, 'admin-ajax.php') !== false) {
+                $target = '';
+            }
+        }
         if (!$target) {
             $target = admin_url('admin.php?page=' . self::MENU_SLUG);
         }
-        $target = remove_query_arg('wg_msg', $target);
+        $target = remove_query_arg(array('wg_msg', 'wg_ip', 'wg_dur'), $target);
         $target = add_query_arg('wg_msg', $message, $target);
+        foreach ((array) $extra as $key => $value) {
+            $target = add_query_arg($key, $value, $target);
+        }
         wp_safe_redirect($target);
         exit;
     }
@@ -1626,23 +1687,28 @@ class WebGuardAI {
     public function admin_post_add_ip() {
         $this->verify_admin_request('webguard_add_ip');
 
-        $ip = isset($_POST['webguard_ip']) ? sanitize_text_field(wp_unslash($_POST['webguard_ip'])) : '';
-        $type = isset($_POST['webguard_type']) ? sanitize_key(wp_unslash($_POST['webguard_type'])) : 'temporary';
-        $seconds = isset($_POST['webguard_seconds']) ? absint($_POST['webguard_seconds']) : 3600;
+        $ip     = isset($_POST['webguard_ip']) ? sanitize_text_field(wp_unslash($_POST['webguard_ip'])) : '';
+        $type   = isset($_POST['webguard_type']) ? sanitize_key(wp_unslash($_POST['webguard_type'])) : 'temporary';
+        $return = isset($_POST['webguard_return']) ? esc_url_raw(wp_unslash($_POST['webguard_return'])) : '';
+        $default_seconds = max(60, (int) ($this->settings()['ban_seconds'] ?? 3600));
+        $seconds = isset($_POST['webguard_seconds']) ? absint($_POST['webguard_seconds']) : $default_seconds;
 
         if (!filter_var($ip, FILTER_VALIDATE_IP)) {
-            $this->redirect_back('invalid_ip');
+            $this->redirect_back('invalid_ip', $return);
         }
         $this->maybe_install();
 
         if ($type === 'whitelist') {
             $this->whitelist_ip($ip);
+            $this->redirect_back('ip_whitelisted', $return, array('wg_ip' => $ip));
         } elseif ($type === 'permanent') {
             $this->ban_ip($ip, 0);
+            $this->redirect_back('ip_banned_perm', $return, array('wg_ip' => $ip));
         } else {
-            $this->ban_ip($ip, $seconds > 0 ? $seconds : 3600);
+            $seconds = ($seconds > 0) ? $seconds : 3600;
+            $this->ban_ip($ip, $seconds);
+            $this->redirect_back('ip_banned_temp', $return, array('wg_ip' => $ip, 'wg_dur' => self::human_duration($seconds)));
         }
-        $this->redirect_back('ip_added');
     }
 
     public function admin_post_remove_ip() {
@@ -1701,7 +1767,8 @@ class WebGuardAI {
         return $day . ' ' . $months[$month] . ' ' . wp_date('Y H:i:s', $timestamp);
     }
 
-    public static function message_text($code) {
+    public static function message_text($code, $ip = '', $dur = '') {
+        $ip_html = ($ip !== '') ? '<code>' . esc_html($ip) . '</code>' : 'Adresa IP';
         $map = array(
             'settings_saved' => array('success', 'Setarile au fost salvate.'),
             'ip_added'       => array('success', 'Adresa IP a fost adaugata.'),
@@ -1712,6 +1779,19 @@ class WebGuardAI {
             'bypass_regenerated' => array('success', 'Token-ul de bypass a fost regenerat. Cookie-urile vechi nu mai sunt valabile.'),
             'log_path_saved' => array('success', 'Calea catre fisierul de log a fost salvata.'),
             'invalid_ip'     => array('error', 'Adresa IP nu este valida.'),
+            'ip_banned_temp' => array('success', sprintf(
+                'Ban aplicat: %s este blocata pentru %s. Banul expira automat.',
+                $ip_html,
+                esc_html($dur !== '' ? $dur : 'durata configurata')
+            )),
+            'ip_banned_perm' => array('success', sprintf(
+                'Ban aplicat: %s este blocata permanent. Nu expira automat; se ridica manual din Ban List.',
+                $ip_html
+            )),
+            'ip_whitelisted' => array('success', sprintf(
+                '%s a fost adaugata in whitelist (nu va fi blocata).',
+                $ip_html
+            )),
         );
         return isset($map[$code]) ? $map[$code] : null;
     }
@@ -1721,12 +1801,14 @@ class WebGuardAI {
             return;
         }
         $code = sanitize_key(wp_unslash($_GET['wg_msg']));
-        $message = self::message_text($code);
+        $ip   = isset($_GET['wg_ip']) ? sanitize_text_field(wp_unslash($_GET['wg_ip'])) : '';
+        $dur  = isset($_GET['wg_dur']) ? sanitize_text_field(wp_unslash($_GET['wg_dur'])) : '';
+        $message = self::message_text($code, $ip, $dur);
         if ($message === null) {
             return;
         }
         echo '<div class="notice notice-' . esc_attr($message[0]) . ' is-dismissible"><p>'
-            . esc_html($message[1]) . '</p></div>';
+            . wp_kses_post($message[1]) . '</p></div>';
     }
 }
 

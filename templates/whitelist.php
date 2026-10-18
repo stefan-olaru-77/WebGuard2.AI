@@ -11,11 +11,12 @@ if (!defined('ABSPATH')) {
 
 $whitelist_data = isset($whitelist_data) && is_array($whitelist_data) ? $whitelist_data : array();
 
-WebGuardAI::render_notice();
 ?>
 
 <div class="wrap">
     <h1>WebGuard.AI - Whitelist</h1>
+
+    <?php WebGuardAI::render_notice(); ?>
 
     <div class="webguard-report">
         <div class="report-header">
@@ -27,8 +28,9 @@ WebGuardAI::render_notice();
         <p class="description">IP-urile din whitelist nu sunt niciodata banate (nici manual, nici automat).</p>
         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
             <input type="hidden" name="action" value="webguard_add_ip">
+            <input type="hidden" name="webguard_return" value="<?php echo esc_url(admin_url('admin.php?page=webguard-whitelist')); ?>">
             <input type="hidden" name="webguard_type" value="whitelist">
-            <?php wp_nonce_field('webguard_add_ip'); ?>
+            <?php wp_nonce_field('webguard_add_ip', '_wpnonce', false); ?>
             <input type="text" name="webguard_ip" class="regular-text" placeholder="ex: 203.0.113.10" required>
             <button type="submit" class="button button-primary">Adauga in whitelist</button>
         </form>
