@@ -237,6 +237,27 @@ $wg_help = function ($text) {
             </tr>
         </table>
 
+        <h3>Integrare fail2ban</h3>
+        <p>Cand pluginul baneaza un IP, scrie o linie intr-un fisier de log. fail2ban citeste acel fisier
+            si blocheaza IP-ul la nivel de kernel (nftables/iptables), astfel incat cererea sa nu mai ajunga
+            deloc la Apache &mdash; deci sa nu mai apara in loguri. Pluginul rămâne sursa de adevar
+            (whitelist, recidiva, dashboard).</p>
+        <table class="form-table" role="presentation">
+            <tr>
+                <th scope="row">Trimite banurile la fail2ban<?php $wg_help('Când este activ, fiecare ban (automat sau manual) este scris într-un fișier de log pe care fail2ban îl citește și aplică blocarea la nivel de kernel. Astfel cererea nu mai ajunge la Apache și nu mai apare în loguri. Dezactivează dacă nu ai un jail fail2ban configurat pentru acest fișier.'); ?></th>
+                <td><label><input type="checkbox" name="fail2ban_enabled" value="1" <?php checked(!empty($settings['fail2ban_enabled'])); ?>>
+                    Scrie banurile in logul citit de fail2ban</label>
+                    <p class="description">Cere un jail fail2ban configurat pentru fisierul de mai jos (vezi README).</p></td>
+            </tr>
+            <tr>
+                <th scope="row"><label for="webguard-f2b-log">Fisier de log pentru fail2ban</label><?php $wg_help('Calea fișierului în care pluginul scrie liniile de ban citite de fail2ban. Lasă gol pentru calea implicită din folderul privat al contului, în afara directorului public. Fișierul trebuie să fie scriibil de PHP și citibil de fail2ban (root).'); ?></th>
+                <td><input type="text" id="webguard-f2b-log" name="fail2ban_log" class="large-text code"
+                        value="<?php echo esc_attr($settings['fail2ban_log'] ?? ''); ?>"
+                        placeholder="<?php echo esc_attr($this->fail2ban_log_path()); ?>">
+                    <p class="description">Gol = <code><?php echo esc_html($this->fail2ban_log_path()); ?></code></p></td>
+            </tr>
+        </table>
+
         <?php submit_button('Salveaza setarile'); ?>
     </form>
 

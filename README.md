@@ -13,6 +13,7 @@ Plugin WordPress de securitate: firewall de aplicație + detectare și raportare
 - **Căutare, filtrare și paginare** în tabelele de evenimente; **Export CSV** pentru evenimente, banuri și whitelist.
 - Coloană **Ban** în toate tabelele cu IP-uri (mai puțin Ban List), care arată dacă IP-ul e banat: `Permanent`, `Temporar 5h:37m` sau `Subnet ...`.
 - **Import din logul Apache** — prinde și cererile oprite la nivel de server, înainte de PHP.
+- **Blocare la nivel de kernel prin fail2ban**: pluginul scrie banurile într-un log dedicat; un jail fail2ban le aplică în **nftables**, astfel încât cererea nu mai ajunge la Apache și **nu mai apare în loguri**.
 - **Cloudflare-aware**: folosește IP-ul real al clientului (`CF-Connecting-IP`, doar când `REMOTE_ADDR` este o adresă Cloudflare verificată).
 - **Bypass prin cookie secret / link magic** pentru administratori cu IP dinamic (PPPoE).
 - **Anti-lockout**: administratorii și editorii autentificați nu sunt niciodată blocați sau banați.
@@ -53,6 +54,7 @@ Plugin WordPress de securitate: firewall de aplicație + detectare și raportare
 - **Rate limiting**: cereri maxime / fereastră (0 = dezactivat).
 - **Recidivă**: activare, trepte de durată, prag pentru ban permanent.
 - **Ingestie log Apache**: import automat (cron/minut), auto-ban din log, cale custom către fișierul de log.
+- **Integrare fail2ban**: trimite banurile într-un fișier de log citit de fail2ban (blocare la nivel de kernel) și cale custom pentru acel fișier.
 - **Raportare**: zile de păstrare, refresh automat al tabelelor.
 - Fiecare setare are un **tooltip de ajutor** (iconița „?"), cu explicație de 2–3 fraze.
 
@@ -68,11 +70,50 @@ Plugin WordPress de securitate: firewall de aplicație + detectare și raportare
 2. Activează pluginul din meniul **Plugins**.
 3. Configurează opțiunile din meniul **WebGuard.AI** din panoul de administrare.
 
+## Blocare la nivel de kernel (fail2ban)
+
+Implicit, pluginul blochează cererile în PHP (răspuns **403**), dar cererea a ajuns deja la Apache și apare în log. Pentru a opri traficul **înainte** de Apache (fără să mai apară în loguri), se integrează cu **fail2ban**:
+
+1. Pluginul scrie fiecare ban într-un fișier dedicat, în afara web root-ului:
+   `/var/www/clients/client0/web1/private/webguard-bans.log`, în formatul
+   `<data ISO> BAN <ip> <secunde>` (respectiv `UNBAN <ip>`).
+2. Un filtru fail2ban recunoaște liniile `BAN`, iar un jail aplică blocarea în **nftables** pe porturile `http,https`.
+3. Un script root (`/root/webguard-f2b-sync.sh`), rulat de **cron la fiecare minut**, menține fail2ban în acord cu baza de date a pluginului: ridică banurile expirate/șterse/whitelisted și adaugă cele active lipsă. **Pluginul rămâne sursa de adevăr.**
+
+Pași de instalare (o singură dată, ca `root`):
+
+```bash
+# 1. Fișierul de log (scriibil de PHP, citibil de root)
+install -o <user_php> -g <grup> -m 0640 /dev/null \
+    /var/www/clients/client0/web1/private/webguard-bans.log
+
+# 2. Filtrul:      /etc/fail2ban/filter.d/webguard-ai.conf
+#    Jail-ul:      /etc/fail2ban/jail.d/webguard-ai.conf
+#    (fișierele sunt în acest repo: fail2ban/filter.d/, fail2ban/jail.d/)
+
+# 3. Validare + reîncărcare
+fail2ban-client -t
+fail2ban-client reload
+
+# 4. Scriptul de sincronizare + cron (root, la fiecare minut)
+install -m 0700 fail2ban/webguard-f2b-sync.sh /root/webguard-f2b-sync.sh
+( crontab -l; echo '* * * * * flock -n /tmp/webguard-f2b-sync.lock /root/webguard-f2b-sync.sh >> /var/log/webguard-f2b-sync.log 2>&1' ) | crontab -
+```
+
+Apoi, în **Dashboard → Integrare fail2ban**, bifează „Trimite banurile la fail2ban" și, opțional, setează o cale custom pentru log.
+
+Note:
+
+- Durata reală a banului este controlată de plugin (recidivă, permanent); jail-ul folosește `bantime = -1` și sincronizarea face ridicarea la momentul corect.
+- **Subnetele** (`/24`, `/64`) rămân blocate la nivel PHP — setul nftables implicit al fail2ban nu acceptă prefixe.
+- Dacă sita este în spatele unui CDN/proxy (Cloudflare), blocarea în kernel oprește doar traficul care ajunge direct la origine; traficul servit de CDN are nevoie de reguli la nivel de edge.
+
 ## Structură
 
 - `webguard.ai.php` – logica principală (detecție, blocare, ban, rate limiting, ingestie log, pagini de admin).
 - `templates/` – paginile de administrare: `dashboard.php`, `events.php`, `banlist.php`, `whitelist.php`.
 - `assets/admin.js` – reîmprospătarea live a tabelelor de evenimente.
+- `fail2ban/` – filtrul, jail-ul și scriptul de sincronizare pentru blocarea la nivel de kernel.
 - `.github/workflows/` – CI: lint PHP la push/PR și Release automat la tag `v*`.
 
 ## Date stocate

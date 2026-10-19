@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: WebGuard.AI
- * Description: Firewall + detectie si raportare locala: ban pe login, auto-ban, si capturarea evenimentelor de tip file-injection, brute-force, scanner-probing si sql-injection. Doua tabele proprii, pagini separate per tip de problema, tabele live in admin.
- * Version: 2026.10.18.4
+ * Description: Firewall + detectie si raportare locala: ban pe login, auto-ban, si capturarea evenimentelor de tip file-injection, brute-force, scanner-probing si sql-injection. Doua tabele proprii, pagini separate per tip de problema, tabele live in admin. Blocare la nivel de kernel prin fail2ban.
+ * Version: 2026.10.19.1
  * Author: Atelierul de IT
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -315,6 +315,10 @@ class WebGuardAI {
             'bypass_token' => '',
             // Cale custom catre fisierul de log Apache (gol = detectie automata).
             'log_path' => '',
+            // Integrare fail2ban: scrie un log dedicat pe care fail2ban il citeste si
+            // aplica ban la nivel de kernel (nftables/iptables), oprind pachetele.
+            'fail2ban_enabled' => 0,
+            'fail2ban_log'     => '',
         );
     }
 
@@ -730,6 +734,9 @@ class WebGuardAI {
                 $network, $now + (int) $seconds, $source, $now
             ));
         }
+
+        // Anunta fail2ban pentru intregul interval.
+        $this->fail2ban_write('BAN', $network, $permanent ? 0 : (int) $seconds);
         return true;
     }
 
@@ -1243,6 +1250,65 @@ class WebGuardAI {
     }
 
     /**
+     * Calea fisierului de log pentru fail2ban.
+     * Implicit: <radacina contului>/private/webguard-bans.log (in afara web root-ului).
+     */
+    private function fail2ban_log_path() {
+        $s = $this->settings();
+        $custom = isset($s['fail2ban_log']) ? trim((string) $s['fail2ban_log']) : '';
+        if ($custom !== '') {
+            return $custom;
+        }
+        return dirname(ABSPATH) . '/private/webguard-bans.log';
+    }
+
+    /**
+     * Scrie o linie in logul fail2ban (BAN / UNBAN).
+     * Format: "2026-10-19T07:56:05+00:00 BAN 1.2.3.4 3600"
+     *
+     * @param string $action  BAN sau UNBAN
+     * @param string $ip
+     * @param int    $seconds 0 = permanent (doar pentru BAN)
+     */
+    private function fail2ban_write($action, $ip, $seconds = 0) {
+        $s = $this->settings();
+        if (empty($s['fail2ban_enabled'])) {
+            return false;
+        }
+        $ip = trim((string) $ip);
+        if ($ip === '' || (!filter_var($ip, FILTER_VALIDATE_IP) && !self::is_cidr($ip))) {
+            return false;
+        }
+        $action = strtoupper($action);
+        if ($action !== 'BAN' && $action !== 'UNBAN') {
+            return false;
+        }
+
+        $path = $this->fail2ban_log_path();
+        if ($path === '') {
+            return false;
+        }
+        $dir = dirname($path);
+        if (!is_dir($dir) || !is_writable($dir)) {
+            return false;
+        }
+
+        // Rotire simpla: daca fisierul depaseste 5 MB, il golim.
+        // fail2ban detecteaza trunchierea si reia citirea de la inceput.
+        if (@filesize($path) > 5 * 1024 * 1024 && @is_writable($path)) {
+            @file_put_contents($path, '', LOCK_EX);
+        }
+
+        $line = gmdate('c') . ' ' . $action . ' ' . $ip;
+        if ($action === 'BAN') {
+            $line .= ' ' . max(0, (int) $seconds);
+        }
+        $line .= "\n";
+
+        return (bool) @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
+    }
+
+    /**
      * Baneaza un IP. $source = 'auto' | 'manual'. $recidive escaladeaza durata si
      * transforma in ban permanent dupa 'permanent_after' abateri.
      */
@@ -1299,6 +1365,9 @@ class WebGuardAI {
                 $ip, $now + (int) $seconds, $source, $now
             ));
         }
+
+        // Anunta fail2ban (ban la nivel de kernel, opreste pachetele).
+        $this->fail2ban_write('BAN', $ip, $permanent ? 0 : (int) $seconds);
         return true;
     }
 
@@ -1334,6 +1403,9 @@ class WebGuardAI {
             "DELETE FROM " . self::table_ip() . " WHERE ip = %s AND ip <> %s",
             $ip, self::CONFIG_IP
         ));
+
+        // Anunta fail2ban sa ridice banul la nivel de kernel.
+        $this->fail2ban_write('UNBAN', $ip);
         return true;
     }
 
@@ -2179,6 +2251,9 @@ class WebGuardAI {
             'guard_admins'      => isset($_POST['guard_admins']) ? 1 : 0,
             'guard_editors'     => isset($_POST['guard_editors']) ? 1 : 0,
             'scanner_ban_after' => isset($_POST['scanner_ban_after']) ? max(0, absint($_POST['scanner_ban_after'])) : 10,
+            // Integrare fail2ban (blocare la nivel de kernel).
+            'fail2ban_enabled'  => isset($_POST['fail2ban_enabled']) ? 1 : 0,
+            'fail2ban_log'      => isset($_POST['fail2ban_log']) ? trim(sanitize_text_field(wp_unslash($_POST['fail2ban_log']))) : '',
             // Pastreaza token-ul de bypass existent (nu e in formular).
             'bypass_token'      => (string) ($this->settings()['bypass_token'] ?? ''),
             // Pastreaza calea de log setata separat (nu e in formularul principal).
