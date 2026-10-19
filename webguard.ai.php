@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WebGuard.AI
  * Description: Firewall + detectie si raportare locala: ban pe login, auto-ban, si capturarea evenimentelor de tip file-injection, brute-force, scanner-probing si sql-injection. Doua tabele proprii, pagini separate per tip de problema, tabele live in admin. Blocare la nivel de kernel prin fail2ban.
- * Version: 2026.10.19.1
+ * Version: 2026.10.19.2
  * Author: Atelierul de IT
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -1259,7 +1259,23 @@ class WebGuardAI {
         if ($custom !== '') {
             return $custom;
         }
-        return dirname(ABSPATH) . '/private/webguard-bans.log';
+
+        // Candidati de directoare, in ordine; se foloseste primul scriibil.
+        // Nu presupunem ISPConfig sau o structura anume: pluginul trebuie sa
+        // functioneze si pe gazduiri obisnuite, cu utilizatori PHP restrictionati.
+        $dirs   = array();
+        $dirs[] = dirname(ABSPATH) . '/private';                       // folder privat ISPConfig/cont (in afara web root)
+        if (defined('WP_CONTENT_DIR')) {
+            $dirs[] = rtrim(WP_CONTENT_DIR, '/\\') . '/uploads';       // uploads WordPress (de obicei scriibil de PHP)
+        }
+        $dirs[] = get_temp_dir();                                      // director temporar al sistemului
+
+        foreach ($dirs as $dir) {
+            if ($dir !== '' && @is_dir($dir) && @is_writable($dir)) {
+                return rtrim($dir, '/\\') . '/webguard-bans.log';
+            }
+        }
+        return '';
     }
 
     /**

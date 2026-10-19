@@ -70,43 +70,53 @@ Plugin WordPress de securitate: firewall de aplicație + detectare și raportare
 2. Activează pluginul din meniul **Plugins**.
 3. Configurează opțiunile din meniul **WebGuard.AI** din panoul de administrare.
 
-## Blocare la nivel de kernel (fail2ban)
+## Blocare la nivel de kernel (fail2ban) — opțional
 
-Implicit, pluginul blochează cererile în PHP (răspuns **403**), dar cererea a ajuns deja la Apache și apare în log. Pentru a opri traficul **înainte** de Apache (fără să mai apară în loguri), se integrează cu **fail2ban**:
+Pluginul funcționează complet **fără** fail2ban: blochează cererile în PHP cu **HTTP 403**. Diferența este că, în acest caz, cererea a ajuns deja la Apache și apare în log. Pentru a opri traficul **înainte** de Apache (fără să mai apară în loguri), se poate integra cu **fail2ban**.
 
-1. Pluginul scrie fiecare ban într-un fișier dedicat, în afara web root-ului:
-   `/var/www/clients/client0/web1/private/webguard-bans.log`, în formatul
+Pluginul **nu are nevoie de privilegii**: rulează ca orice plugin WordPress și doar scrie un fișier de log. Partea de root (instalarea fail2ban, o dată) este responsabilitatea administratorului serverului. Sunt două moduri:
+
+### 1. Mod simplu (recomandat, portabil — fără script de root)
+
+1. Pluginul scrie fiecare ban într-un fișier de log, în formatul
    `<data ISO> BAN <ip> <secunde>` (respectiv `UNBAN <ip>`).
 2. Un filtru fail2ban recunoaște liniile `BAN`, iar un jail aplică blocarea în **nftables** pe porturile `http,https`.
-3. Un script root (`/root/webguard-f2b-sync.sh`), rulat de **cron la fiecare minut**, menține fail2ban în acord cu baza de date a pluginului: ridică banurile expirate/șterse/whitelisted și adaugă cele active lipsă. **Pluginul rămâne sursa de adevăr.**
+3. fail2ban își gestionează **singur** durata: banul expiră automat, iar recidiviștii primesc durate din ce în ce mai mari (`bantime.increment`). Nu e nevoie de nimic care să ruleze cu root în afara fail2ban.
 
-Pași de instalare (o singură dată, ca `root`):
+Instalare (o singură dată, ca `root`), folosind fișierele din acest repo:
 
 ```bash
-# 1. Fișierul de log (scriibil de PHP, citibil de root)
-install -o <user_php> -g <grup> -m 0640 /dev/null \
-    /var/www/clients/client0/web1/private/webguard-bans.log
+# 1. Filtrul si jail-ul
+install -D -m 0644 fail2ban/filter.d/webguard-ai.conf /etc/fail2ban/filter.d/webguard-ai.conf
+install -D -m 0644 fail2ban/jail.d/webguard-ai.conf   /etc/fail2ban/jail.d/webguard-ai.conf
+#    editeaza "logpath" in jail cu calea afisata de plugin in Dashboard
 
-# 2. Filtrul:      /etc/fail2ban/filter.d/webguard-ai.conf
-#    Jail-ul:      /etc/fail2ban/jail.d/webguard-ai.conf
-#    (fișierele sunt în acest repo: fail2ban/filter.d/, fail2ban/jail.d/)
-
-# 3. Validare + reîncărcare
+# 2. Validare + reincarcare
 fail2ban-client -t
 fail2ban-client reload
+```
 
-# 4. Scriptul de sincronizare + cron (root, la fiecare minut)
+Apoi, în **Dashboard → Integrare fail2ban**, bifează „Trimite banurile la fail2ban". Calea logului o poți lăsa goală (aleasă automat într-un folder scriibil) sau o poți seta explicit; calea rezolvată e afișată sub câmp.
+
+### 2. Mod exact (opțional, necesită root)
+
+Dacă vrei ca durata banului la nivel de kernel să fie **exact** cea decisă de plugin (trepte de recidivă, ban permanent) și ca **ștergerea/whitelist-ul să ridice banul instant**, se folosește un al doilea component:
+
+- jail-ul se setează pe `bantime = -1` (comentariile din fișierul de jail arată cum);
+- scriptul `fail2ban/webguard-f2b-sync.sh` se instalează și se rulează din **cron (root), la fiecare minut**. El aduce fail2ban în acord cu baza de date a pluginului în ambele direcții: ridică banurile expirate/șterse/whitelisted și adaugă cele active lipsă. **Pluginul rămâne sursa de adevăr.**
+
+```bash
 install -m 0700 fail2ban/webguard-f2b-sync.sh /root/webguard-f2b-sync.sh
 ( crontab -l; echo '* * * * * flock -n /tmp/webguard-f2b-sync.lock /root/webguard-f2b-sync.sh >> /var/log/webguard-f2b-sync.log 2>&1' ) | crontab -
 ```
 
-Apoi, în **Dashboard → Integrare fail2ban**, bifează „Trimite banurile la fail2ban" și, opțional, setează o cale custom pentru log.
+Calea către `wp-config.php` se poate da prin variabila de mediu `WEBGUARD_WP_CONFIG`.
 
-Note:
+### Note
 
-- Durata reală a banului este controlată de plugin (recidivă, permanent); jail-ul folosește `bantime = -1` și sincronizarea face ridicarea la momentul corect.
 - **Subnetele** (`/24`, `/64`) rămân blocate la nivel PHP — setul nftables implicit al fail2ban nu acceptă prefixe.
-- Dacă sita este în spatele unui CDN/proxy (Cloudflare), blocarea în kernel oprește doar traficul care ajunge direct la origine; traficul servit de CDN are nevoie de reguli la nivel de edge.
+- Dacă situl este în spatele unui CDN/proxy (ex. Cloudflare), blocarea în kernel oprește doar traficul care ajunge direct la origine; traficul servit de CDN are nevoie de reguli la nivel de edge.
+- Pe gazduirile partajate fără `sudo`, folosește **doar modul simplu**.
 
 ## Structură
 

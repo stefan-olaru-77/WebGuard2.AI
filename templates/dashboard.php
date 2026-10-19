@@ -250,7 +250,7 @@ $wg_help = function ($text) {
                     <p class="description">Cere un jail fail2ban configurat pentru fisierul de mai jos (vezi README).</p></td>
             </tr>
             <tr>
-                <th scope="row"><label for="webguard-f2b-log">Fisier de log pentru fail2ban</label><?php $wg_help('Calea fișierului în care pluginul scrie liniile de ban citite de fail2ban. Lasă gol pentru calea implicită din folderul privat al contului, în afara directorului public. Fișierul trebuie să fie scriibil de PHP și citibil de fail2ban (root).'); ?></th>
+                <th scope="row"><label for="webguard-f2b-log">Fisier de log pentru fail2ban</label><?php $wg_help('Calea fișierului în care pluginul scrie liniile de ban citite de fail2ban. Lasă gol pentru calea aleasă automat: pluginul folosește primul folder scriibil dintre folderul privat al contului, uploads WordPress și directorul temporar. Fișierul trebuie să fie scriibil de PHP și citibil de fail2ban (root).'); ?></th>
                 <td><input type="text" id="webguard-f2b-log" name="fail2ban_log" class="large-text code"
                         value="<?php echo esc_attr($settings['fail2ban_log'] ?? ''); ?>"
                         placeholder="<?php echo esc_attr($this->fail2ban_log_path()); ?>">

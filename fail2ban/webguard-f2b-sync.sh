@@ -1,21 +1,31 @@
 #!/bin/bash
 #
-# webguard-f2b-sync.sh
+# webguard-f2b-sync.sh  (OPTIONAL)
+#
+# ATENTIE: acest script este OPTIONAL. Se foloseste doar in "modul exact" al
+# jail-ului fail2ban (bantime = -1), cand vrei ca durata banului la nivel de
+# kernel sa fie exact cea decisa de plugin si ca stergerea/whitelist-ul sa
+# ridice banul instant. In "modul simplu" (implicit) fail2ban isi gestioneaza
+# singur duratele si acest script NU este necesar.
+#
+# Necesita root (fail2ban-client). Pe gazduirile partajate, unde utilizatorul
+# PHP nu are sudo, foloseste modul simplu al jail-ului.
+#
 # Sincronizeaza jail-ul fail2ban "webguard-ai" cu baza de date a pluginului
 # WordPress WebGuard2.AI. Rulat de cron (root) la fiecare minut.
 #
-# De ce este nevoie: PHP ruleaza ca utilizatorul web si NU poate apela
-# fail2ban-client (necesita root). Pluginul scrie banurile intr-un log
-# (filtru fail2ban = ban la nivel de kernel), insa ridicarea banului
-# (expirare / stergere manuala / whitelist) trebuie facuta de root.
-# Acest script aduce fail2ban in acord cu pluginul in ambele directii.
+# De ce este nevoie in modul exact: PHP ruleaza ca utilizatorul web si NU poate
+# apela fail2ban-client (necesita root). Pluginul scrie banurile intr-un log
+# (filtru fail2ban = ban la nivel de kernel), insa ridicarea banului (expirare /
+# stergere manuala / whitelist) trebuie facuta de root. Acest script aduce
+# fail2ban in acord cu pluginul in ambele directii.
 #
 # Sursa de adevar: tabelul wp_webguard_ip (status='ban', inca activ).
-# Seteaza mai jos calea corecta daca se schimba pluginul / prefixul.
+# Poti seta calea catre wp-config.php prin variabila de mediu WEBGUARD_WP_CONFIG.
 
 set -u
 
-WP_CONFIG="/var/www/clients/client0/web1/web/wp-config.php"
+WP_CONFIG="${WEBGUARD_WP_CONFIG:-/var/www/clients/client0/web1/web/wp-config.php}"
 JAIL="webguard-ai"
 F2B="$(command -v fail2ban-client || echo /usr/bin/fail2ban-client)"
 
