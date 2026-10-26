@@ -250,11 +250,12 @@ $wg_help = function ($text) {
                     <p class="description">Cere un jail fail2ban configurat pentru fisierul de mai jos (vezi README).</p></td>
             </tr>
             <tr>
-                <th scope="row"><label for="webguard-f2b-log">Fisier de log pentru fail2ban</label><?php $wg_help('Calea fișierului în care pluginul scrie liniile de ban citite de fail2ban. Lasă gol pentru calea aleasă automat: pluginul folosește primul folder scriibil dintre folderul privat al contului, uploads WordPress și directorul temporar. Fișierul trebuie să fie scriibil de PHP și citibil de fail2ban (root).'); ?></th>
-                <td><input type="text" id="webguard-f2b-log" name="fail2ban_log" class="large-text code"
-                        value="<?php echo esc_attr($settings['fail2ban_log'] ?? ''); ?>"
-                        placeholder="<?php echo esc_attr($this->fail2ban_log_path()); ?>">
-                    <p class="description">Gol = <code><?php echo esc_html($this->fail2ban_log_path()); ?></code></p></td>
+                <th scope="row"><label for="webguard-logs-dir">Director pentru loguri</label><?php $wg_help('Directorul în care pluginul scrie logurile citite de fail2ban. Lasă gol pentru alegerea automată: pluginul preferă un director din afara web root-ului (nepublic), de exemplu directorul de log al contului sau folderul privat. Directorul este creat automat cu permisiuni restrictive, iar dacă ajunge sub web root este protejat cu reguli de acces.'); ?></th>
+                <td><input type="text" id="webguard-logs-dir" name="logs_dir" class="large-text code"
+                        value="<?php echo esc_attr($settings['logs_dir'] ?? ''); ?>"
+                        placeholder="<?php echo esc_attr($this->logs_dir()); ?>">
+                    <p class="description">Gol = <code><?php echo esc_html($this->logs_dir()); ?></code><br>
+                        Fisier: <code><?php echo esc_html($this->fail2ban_log_path()); ?></code></p></td>
             </tr>
         </table>
 

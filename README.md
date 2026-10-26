@@ -55,7 +55,7 @@ Plugin WordPress de securitate: firewall de aplicație + detectare și raportare
 - **Rate limiting**: cereri maxime / fereastră (0 = dezactivat).
 - **Recidivă**: activare, trepte de durată, prag pentru ban permanent.
 - **Ingestie log Apache**: import automat (cron/minut), auto-ban din log, cale custom către fișierul de log.
-- **Integrare fail2ban**: trimite banurile într-un fișier de log citit de fail2ban (blocare la nivel de kernel) și cale custom pentru acel fișier.
+- **Integrare fail2ban**: trimite banurile într-un **director de loguri dedicat**, nepublic, citit de fail2ban (blocare la nivel de kernel); directorul poate fi lăsat la alegerea automată sau setat explicit.
 - **Blocare la nivel de Apache**: scrie banurile într-un bloc gestionat din `.htaccess`, refuzat de Apache înainte de PHP.
 - **Raportare**: zile de păstrare, refresh automat al tabelelor.
 - Fiecare setare are un **tooltip de ajutor** (iconița „?"), cu explicație de 2–3 fraze.
@@ -98,11 +98,11 @@ fail2ban-client -t
 fail2ban-client reload
 ```
 
-Apoi, în **Dashboard → Integrare fail2ban**, bifează „Trimite banurile la fail2ban". Calea logului o poți lăsa goală (aleasă automat într-un folder scriibil) sau o poți seta explicit; calea rezolvată e afișată sub câmp.
+Apoi, în **Dashboard → Integrare fail2ban**, bifează „Trimite banurile la fail2ban". Pluginul scrie logurile într-un **director dedicat**, nu direct într-un fișier împrăștiat prin instalare. Lasă câmpul „Director pentru loguri" gol pentru alegerea automată: pluginul preferă un director **din afara document root-ului** (deci nepublic), de exemplu directorul de log al contului (`log/webguard`) sau folderul privat, și îl creează cu permisiuni restrictive. Dacă ajunge totuși sub document root, îl protejează automat cu `.htaccess`, `index.php` și `web.config`. Calea completă a fișierului este afișată sub câmp și trebuie trecută la `logpath` în jail.
 
 ### 2. Mod exact (opțional, necesită root)
 
-Dacă vrei ca durata banului la nivel de kernel să fie **exact** cea decisă de plugin (trepte de recidivă, ban permanent) și ca **ștergerea/whitelist-ul să ridice banul instant**, se folosește un al doilea component:
+Dacă vrei ca durata banului la nivel de kernel să fie **exact** cea decisă de plugin (trepte de recidivă, ban permanent) și ca **ștergerea/whitelist-ul să ridice banul instant**, se folosește o a doua componentă:
 
 - jail-ul se setează pe `bantime = -1` (comentariile din fișierul de jail arată cum);
 - scriptul `fail2ban/webguard-f2b-sync.sh` se instalează și se rulează din **cron (root), la fiecare minut**. El aduce fail2ban în acord cu baza de date a pluginului în ambele direcții: ridică banurile expirate/șterse/whitelisted și adaugă cele active lipsă. **Pluginul rămâne sursa de adevăr.**

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WebGuard.AI
  * Description: Firewall + detectie si raportare locala: ban pe login, auto-ban, si capturarea evenimentelor de tip file-injection, brute-force, scanner-probing si sql-injection. Doua tabele proprii, pagini separate per tip de problema, tabele live in admin. Blocare la nivel de kernel prin fail2ban.
- * Version: 2026.10.26.1
+ * Version: 2026.10.26.2
  * Author: Atelierul de IT
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -321,6 +321,9 @@ class WebGuardAI {
             'fail2ban_log'     => '',
             // Aplica banurile direct in .htaccess (Apache refuza IP-ul inainte de PHP).
             'htaccess_enabled' => 0,
+            // Director dedicat pentru logurile citite de fail2ban (gol = ales automat,
+            // in afara web root-ului, daca se poate).
+            'logs_dir' => '',
         );
     }
 
@@ -1259,32 +1262,111 @@ class WebGuardAI {
     }
 
     /**
-     * Calea fisierului de log pentru fail2ban.
-     * Implicit: <radacina contului>/private/webguard-bans.log (in afara web root-ului).
+     * Directorul dedicat pentru logurile citite de fail2ban.
+     *
+     * Ordine: setarea `logs_dir` -> directorul de log al contului -> `private`
+     * -> radacina contului -> temporar -> uploads. Se creeaza cu 0700. Se prefera
+     * intotdeauna o locatie in afara document root-ului (nepublica).
      */
-    private function fail2ban_log_path() {
+    private function logs_dir() {
         $s = $this->settings();
-        $custom = isset($s['fail2ban_log']) ? trim((string) $s['fail2ban_log']) : '';
+
+        $custom = isset($s['logs_dir']) ? trim((string) $s['logs_dir']) : '';
         if ($custom !== '') {
-            return $custom;
+            $custom = rtrim($custom, '/\\');
+            if (!is_dir($custom)) {
+                @mkdir($custom, 0700, true);
+            }
+            if (is_dir($custom) && is_writable($custom)) {
+                $this->protect_logs_dir($custom);
+                return $custom;
+            }
+            return '';
         }
 
-        // Candidati de directoare, in ordine; se foloseste primul scriibil.
-        // Nu presupunem ISPConfig sau o structura anume: pluginul trebuie sa
-        // functioneze si pe gazduiri obisnuite, cu utilizatori PHP restrictionati.
-        $dirs   = array();
-        $dirs[] = dirname(ABSPATH) . '/private';                       // folder privat ISPConfig/cont (in afara web root)
+        $parent = dirname(ABSPATH);
+        $candidates = array(
+            $parent . '/log/webguard',          // directorul de log al contului (ISPConfig), in afara web root
+            $parent . '/private/webguard-logs', // folder privat al contului, in afara web root
+            $parent . '/webguard-logs',         // radacina contului (daca e scriibila)
+            rtrim(get_temp_dir(), '/\\') . '/webguard-logs',
+        );
         if (defined('WP_CONTENT_DIR')) {
-            $dirs[] = rtrim(WP_CONTENT_DIR, '/\\') . '/uploads';       // uploads WordPress (de obicei scriibil de PHP)
+            // Ultima optiune: in web root. O protejam cu fisiere de acces.
+            $candidates[] = rtrim(WP_CONTENT_DIR, '/\\') . '/uploads/webguard-logs';
         }
-        $dirs[] = get_temp_dir();                                      // director temporar al sistemului
 
-        foreach ($dirs as $dir) {
-            if ($dir !== '' && @is_dir($dir) && @is_writable($dir)) {
-                return rtrim($dir, '/\\') . '/webguard-bans.log';
+        foreach ($candidates as $dir) {
+            if ($dir === '') {
+                continue;
+            }
+            if (!is_dir($dir)) {
+                @mkdir($dir, 0700, true);
+            }
+            if (is_dir($dir) && is_writable($dir)) {
+                $this->protect_logs_dir($dir);
+                return rtrim($dir, '/\\');
             }
         }
         return '';
+    }
+
+    /**
+     * Daca directorul de loguri ajunge sub document root, il face nepublic
+     * (Apache/IIS). In afara web root-ului nu e necesar, dar e inofensiv.
+     */
+    private function protect_logs_dir($dir) {
+        $dir = rtrim($dir, '/\\');
+        if ($dir === '' || !is_dir($dir)) {
+            return;
+        }
+        $root      = rtrim((string) realpath(ABSPATH), '/\\');
+        $real_dir  = rtrim((string) realpath($dir), '/\\');
+        if ($root === '' || $real_dir === '') {
+            return;
+        }
+        if ($real_dir !== $root && strpos($real_dir, $root . '/') !== 0) {
+            return; // in afara document root-ului: nu e public
+        }
+
+        $ht = $dir . '/.htaccess';
+        if (!file_exists($ht)) {
+            @file_put_contents($ht,
+                "# WebGuard.AI - director de loguri, acces interzis.\n"
+                . "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n"
+                . "<IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n</IfModule>\n",
+                LOCK_EX
+            );
+        }
+        $idx = $dir . '/index.php';
+        if (!file_exists($idx)) {
+            @file_put_contents($idx, "<?php\n// Silence is golden.\n", LOCK_EX);
+        }
+        $wc = $dir . '/web.config';
+        if (!file_exists($wc)) {
+            @file_put_contents($wc,
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration>\n"
+                . "  <system.webServer>\n    <authorization>\n"
+                . "      <deny users=\"*\" />\n    </authorization>\n"
+                . "  </system.webServer>\n</configuration>\n",
+                LOCK_EX
+            );
+        }
+    }
+
+    /**
+     * Calea fisierului de log pentru fail2ban.
+     * `fail2ban_log` (cale completa) ramane suportat pentru compatibilitate;
+     * altfel se foloseste <logs_dir>/webguard-bans.log.
+     */
+    private function fail2ban_log_path() {
+        $s = $this->settings();
+        $legacy = isset($s['fail2ban_log']) ? trim((string) $s['fail2ban_log']) : '';
+        if ($legacy !== '') {
+            return $legacy;
+        }
+        $dir = $this->logs_dir();
+        return $dir !== '' ? rtrim($dir, '/\\') . '/webguard-bans.log' : '';
     }
 
     /**
@@ -1330,7 +1412,12 @@ class WebGuardAI {
         }
         $line .= "\n";
 
-        return (bool) @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
+        $is_new = !file_exists($path);
+        $ok     = (bool) @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
+        if ($ok && $is_new) {
+            @chmod($path, 0640); // scriibil de PHP, citibil de root/fail2ban
+        }
+        return $ok;
     }
 
     /* ---------------------------------------------------------------------
@@ -2397,7 +2484,10 @@ class WebGuardAI {
             'scanner_ban_after' => isset($_POST['scanner_ban_after']) ? max(0, absint($_POST['scanner_ban_after'])) : 10,
             // Integrare fail2ban (blocare la nivel de kernel).
             'fail2ban_enabled'  => isset($_POST['fail2ban_enabled']) ? 1 : 0,
-            'fail2ban_log'      => isset($_POST['fail2ban_log']) ? trim(sanitize_text_field(wp_unslash($_POST['fail2ban_log']))) : '',
+            // Director dedicat pentru loguri (gol = ales automat, in afara web root).
+            'logs_dir'          => isset($_POST['logs_dir']) ? trim(sanitize_text_field(wp_unslash($_POST['logs_dir']))) : '',
+            // Pastreaza vechea cale completa (compatibilitate), nu e in formular.
+            'fail2ban_log'      => (string) ($this->settings()['fail2ban_log'] ?? ''),
             // Blocare la nivel de Apache (.htaccess).
             'htaccess_enabled'  => isset($_POST['htaccess_enabled']) ? 1 : 0,
             // Pastreaza token-ul de bypass existent (nu e in formular).
