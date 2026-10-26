@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WebGuard.AI
  * Description: Firewall + detectie si raportare locala: ban pe login, auto-ban, si capturarea evenimentelor de tip file-injection, brute-force, scanner-probing si sql-injection. Doua tabele proprii, pagini separate per tip de problema, tabele live in admin. Blocare la nivel de kernel prin fail2ban.
- * Version: 2026.10.19.2
+ * Version: 2026.10.26.1
  * Author: Atelierul de IT
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -319,6 +319,8 @@ class WebGuardAI {
             // aplica ban la nivel de kernel (nftables/iptables), oprind pachetele.
             'fail2ban_enabled' => 0,
             'fail2ban_log'     => '',
+            // Aplica banurile direct in .htaccess (Apache refuza IP-ul inainte de PHP).
+            'htaccess_enabled' => 0,
         );
     }
 
@@ -534,6 +536,7 @@ class WebGuardAI {
         add_filter('cron_schedules', array($this, 'cron_schedules'));
         add_action('init', array($this, 'maybe_schedule_ingest'), 2);
         add_action('webguard_ingest_log', array($this, 'ingest_access_log'));
+        add_action('webguard_sync_htaccess', array($this, 'htaccess_rebuild'));
         add_action('webguard_daily_cleanup', array($this, 'run_daily_cleanup'));
         add_action('admin_post_webguard_ingest_log', array($this, 'admin_post_ingest_log'));
         add_action('admin_post_webguard_export', array($this, 'admin_post_export'));
@@ -568,6 +571,9 @@ class WebGuardAI {
         }
         if (!wp_next_scheduled('webguard_daily_cleanup')) {
             wp_schedule_event(time() + 3600, 'webguard_daily', 'webguard_daily_cleanup');
+        }
+        if (!wp_next_scheduled('webguard_sync_htaccess')) {
+            wp_schedule_event(time() + 60, 'webguard_minute', 'webguard_sync_htaccess');
         }
     }
 
@@ -737,6 +743,8 @@ class WebGuardAI {
 
         // Anunta fail2ban pentru intregul interval.
         $this->fail2ban_write('BAN', $network, $permanent ? 0 : (int) $seconds);
+        // Actualizeaza blocarea la nivel de Apache (.htaccess).
+        $this->htaccess_rebuild();
         return true;
     }
 
@@ -1246,6 +1254,7 @@ class WebGuardAI {
                attempts = 0, window_start = NULL, updated_at = VALUES(updated_at)",
             $ip, time()
         ));
+        $this->htaccess_rebuild();
         return true;
     }
 
@@ -1324,6 +1333,118 @@ class WebGuardAI {
         return (bool) @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
     }
 
+    /* ---------------------------------------------------------------------
+     * Blocare la nivel de Apache (.htaccess)
+     * ------------------------------------------------------------------- */
+
+    /** Calea catre .htaccess-ul din document root. */
+    private function htaccess_path() {
+        return rtrim(ABSPATH, '/\\') . '/.htaccess';
+    }
+
+    /**
+     * Construieste blocul de reguli pentru .htaccess din banurile active.
+     * Returneaza '' daca nu exista niciun ban activ.
+     */
+    private function htaccess_build_block() {
+        global $wpdb;
+        $rows = $wpdb->get_col($wpdb->prepare(
+            "SELECT ip FROM " . self::table_ip() . "
+             WHERE status = 'ban' AND ip <> %s
+               AND (ban_permanent = 1 OR ban_until > %d)
+             ORDER BY updated_at DESC
+             LIMIT 1000",
+            self::CONFIG_IP, time()
+        ));
+        if (!is_array($rows) || empty($rows)) {
+            return '';
+        }
+
+        $ips = array();
+        foreach ($rows as $ip) {
+            $ip = trim((string) $ip);
+            if ($ip === '') {
+                continue;
+            }
+            // Nu blocam niciodata loopback (cron, servicii locale).
+            if ($ip === '::1' || strpos($ip, '127.') === 0) {
+                continue;
+            }
+            if (filter_var($ip, FILTER_VALIDATE_IP) || self::is_cidr($ip)) {
+                $ips[] = $ip;
+            }
+        }
+        $ips = array_values(array_unique($ips));
+        if (empty($ips)) {
+            return '';
+        }
+
+        return "# BEGIN WebGuard.AI deny (gestionat automat - nu edita intre markeri)\n"
+            . "<RequireAll>\n"
+            . "    Require all granted\n"
+            . "    Require not ip " . implode(' ', $ips) . "\n"
+            . "</RequireAll>\n"
+            . "# END WebGuard.AI deny";
+    }
+
+    /**
+     * Rescrie blocul gestionat din .htaccess pe baza banurilor active.
+     * Scriere atomica (fisier temporar + rename) ca sa nu rupem site-ul.
+     * Cand setarea e dezactivata, blocul este eliminat.
+     */
+    public function htaccess_rebuild() {
+        $s    = $this->settings();
+        $path = $this->htaccess_path();
+
+        $current = '';
+        if (file_exists($path)) {
+            if (!is_writable($path)) {
+                return false;
+            }
+            $current = (string) @file_get_contents($path);
+        } else {
+            $dir = dirname($path);
+            if (!is_dir($dir) || !is_writable($dir)) {
+                return false;
+            }
+        }
+
+        $block = !empty($s['htaccess_enabled']) ? $this->htaccess_build_block() : '';
+
+        // Elimina orice bloc vechi (inclusiv duplicate), apoi adauga cel nou.
+        $cleaned = preg_replace(
+            '/\n?# BEGIN WebGuard\.AI deny.*?# END WebGuard\.AI deny[^\n]*\n?/s',
+            '',
+            $current
+        );
+        $cleaned = rtrim((string) $cleaned);
+        $new     = $cleaned;
+        if ($block !== '') {
+            $new = ($cleaned !== '' ? $cleaned . "\n\n" : '') . $block;
+        }
+        $new = rtrim($new) . "\n";
+
+        if ($current !== '' && $new === $current) {
+            return true; // nimic de schimbat
+        }
+        if ($current === '' && $block === '') {
+            return true;
+        }
+
+        $tmp     = $path . '.tmp';
+        $written = @file_put_contents($tmp, $new, LOCK_EX);
+        if ($written === false) {
+            @unlink($tmp);
+            return false;
+        }
+        @chmod($tmp, file_exists($path) ? (@fileperms($path) & 0777) : 0644);
+        if (!@rename($tmp, $path)) {
+            @unlink($tmp);
+            return false;
+        }
+        return true;
+    }
+
     /**
      * Baneaza un IP. $source = 'auto' | 'manual'. $recidive escaladeaza durata si
      * transforma in ban permanent dupa 'permanent_after' abateri.
@@ -1384,6 +1505,8 @@ class WebGuardAI {
 
         // Anunta fail2ban (ban la nivel de kernel, opreste pachetele).
         $this->fail2ban_write('BAN', $ip, $permanent ? 0 : (int) $seconds);
+        // Actualizeaza blocarea la nivel de Apache (.htaccess).
+        $this->htaccess_rebuild();
         return true;
     }
 
@@ -1422,6 +1545,8 @@ class WebGuardAI {
 
         // Anunta fail2ban sa ridice banul la nivel de kernel.
         $this->fail2ban_write('UNBAN', $ip);
+        // Actualizeaza blocarea la nivel de Apache (.htaccess).
+        $this->htaccess_rebuild();
         return true;
     }
 
@@ -1456,6 +1581,9 @@ class WebGuardAI {
             "DELETE FROM " . self::table_ip() . " WHERE status = 'expired' AND updated_at < %d",
             $now - ($days * DAY_IN_SECONDS)
         ));
+
+        // Banurile expirate trebuie scoase si din .htaccess.
+        $this->htaccess_rebuild();
     }
 
     /* ---------------------------------------------------------------------
@@ -2270,6 +2398,8 @@ class WebGuardAI {
             // Integrare fail2ban (blocare la nivel de kernel).
             'fail2ban_enabled'  => isset($_POST['fail2ban_enabled']) ? 1 : 0,
             'fail2ban_log'      => isset($_POST['fail2ban_log']) ? trim(sanitize_text_field(wp_unslash($_POST['fail2ban_log']))) : '',
+            // Blocare la nivel de Apache (.htaccess).
+            'htaccess_enabled'  => isset($_POST['htaccess_enabled']) ? 1 : 0,
             // Pastreaza token-ul de bypass existent (nu e in formular).
             'bypass_token'      => (string) ($this->settings()['bypass_token'] ?? ''),
             // Pastreaza calea de log setata separat (nu e in formularul principal).
@@ -2285,6 +2415,8 @@ class WebGuardAI {
         ));
 
         $this->settings = array_merge(self::default_settings(), $settings);
+        // Aplica imediat blocarea/deblocarea in .htaccess dupa salvare.
+        $this->htaccess_rebuild();
         $this->redirect_back('settings_saved');
     }
 

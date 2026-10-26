@@ -14,6 +14,7 @@ Plugin WordPress de securitate: firewall de aplicație + detectare și raportare
 - Coloană **Ban** în toate tabelele cu IP-uri (mai puțin Ban List), care arată dacă IP-ul e banat: `Permanent`, `Temporar 5h:37m` sau `Subnet ...`.
 - **Import din logul Apache** — prinde și cererile oprite la nivel de server, înainte de PHP.
 - **Blocare la nivel de kernel prin fail2ban**: pluginul scrie banurile într-un log dedicat; un jail fail2ban le aplică în **nftables**, astfel încât cererea nu mai ajunge la Apache și **nu mai apare în loguri**.
+- **Blocare la nivel de Apache (`.htaccess`)**: pluginul scrie IP-urile banate într-un bloc gestionat din `.htaccess`, iar Apache le refuză înainte de PHP. Nu necesită root, dar Apache loghează în continuare cererea (403).
 - **Cloudflare-aware**: folosește IP-ul real al clientului (`CF-Connecting-IP`, doar când `REMOTE_ADDR` este o adresă Cloudflare verificată).
 - **Bypass prin cookie secret / link magic** pentru administratori cu IP dinamic (PPPoE).
 - **Anti-lockout**: administratorii și editorii autentificați nu sunt niciodată blocați sau banați.
@@ -55,6 +56,7 @@ Plugin WordPress de securitate: firewall de aplicație + detectare și raportare
 - **Recidivă**: activare, trepte de durată, prag pentru ban permanent.
 - **Ingestie log Apache**: import automat (cron/minut), auto-ban din log, cale custom către fișierul de log.
 - **Integrare fail2ban**: trimite banurile într-un fișier de log citit de fail2ban (blocare la nivel de kernel) și cale custom pentru acel fișier.
+- **Blocare la nivel de Apache**: scrie banurile într-un bloc gestionat din `.htaccess`, refuzat de Apache înainte de PHP.
 - **Raportare**: zile de păstrare, refresh automat al tabelelor.
 - Fiecare setare are un **tooltip de ajutor** (iconița „?"), cu explicație de 2–3 fraze.
 
@@ -117,6 +119,31 @@ Calea către `wp-config.php` se poate da prin variabila de mediu `WEBGUARD_WP_CO
 - **Subnetele** (`/24`, `/64`) rămân blocate la nivel PHP — setul nftables implicit al fail2ban nu acceptă prefixe.
 - Dacă situl este în spatele unui CDN/proxy (ex. Cloudflare), blocarea în kernel oprește doar traficul care ajunge direct la origine; traficul servit de CDN are nevoie de reguli la nivel de edge.
 - Pe gazduirile partajate fără `sudo`, folosește **doar modul simplu**.
+
+## Blocare la nivel de Apache (`.htaccess`) — fără root
+
+Pluginul poate scrie IP-urile banate direct în `.htaccess`-ul din document root, iar Apache le refuză **înainte de PHP**. WordPress nu mai rulează pentru ele, deci consumul scade. Nu necesită root: `.htaccess` este deținut de utilizatorul PHP.
+
+Se activează din **Dashboard → Blocare la nivel de Apache (.htaccess)**. Pluginul întreține un bloc delimitat de markeri, pe care îl rescrie **atomic** (fișier temporar + rename):
+
+```apache
+# BEGIN WebGuard.AI deny (gestionat automat - nu edita intre markeri)
+<RequireAll>
+    Require all granted
+    Require not ip 1.2.3.4 5.6.7.8 2001:db8::/32
+</RequireAll>
+# END WebGuard.AI deny
+```
+
+- Include IPv4, IPv6 și subneturi (CIDR).
+- Loopback-ul (`127.0.0.0/8`, `::1`) este exclus mereu, ca să nu rupă cron-ul.
+- Blocul este actualizat la fiecare ban/unban/whitelist și, în plus, printr-un cron la minut (pentru expirări și dacă `.htaccess` este rescris de altcineva).
+- Necesită `AllowOverride All` (sau cel puțin `AuthConfig`) pe document root.
+- Lista este limitată la 1000 de intrări; peste asta, `.htaccess` devine lent (se parsează la fiecare cerere).
+
+**Important:** Apache **loghează în continuare** cererea refuzată (403). Deci `.htaccess` oprește PHP-ul, dar **nu** elimină linia din access log. Pentru „să nu mai apară deloc în loguri" este nevoie de blocare în kernel (fail2ban) sau la CDN.
+
+**Anti-lockout:** blocarea în `.htaccess` se aplică înainte de PHP, deci link-ul de bypass cu cookie **nu poate** salva un IP aflat în listă. Administratorii nu sunt banați automat (protecția din setări), iar IP-urile din whitelist nu sunt incluse. Dacă îți blochezi din greșeală IP-ul, șterge manual blocul dintre markeri din `.htaccess` (sau dezactivează opțiunea și salvează setările de pe alt IP).
 
 ## Structură
 

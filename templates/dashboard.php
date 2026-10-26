@@ -258,6 +258,20 @@ $wg_help = function ($text) {
             </tr>
         </table>
 
+        <h3>Blocare la nivel de Apache (.htaccess)</h3>
+        <p>Pluginul poate scrie IP-urile banate direct in <code>.htaccess</code>, iar Apache le refuza
+            inainte de PHP. Astfel WordPress nu mai ruleaza pentru ele. Atentie: Apache logheaza in continuare
+            cererea (403), deci pentru a nu mai aparea deloc in loguri este nevoie de blocare in kernel (fail2ban) sau la CDN.</p>
+        <table class="form-table" role="presentation">
+            <tr>
+                <th scope="row">Aplica banurile in .htaccess<?php $wg_help('Scrie automat IP-urile banate într-un bloc special din fișierul .htaccess al site-ului. Apache le refuză înainte de PHP, deci WordPress nu mai rulează pentru ele și consumul scade. Reține că Apache înregistrează totuși cererea în access log; pentru a nu mai apărea deloc în loguri este nevoie de blocare la nivel de kernel sau la nivel de CDN.'); ?></th>
+                <td><label><input type="checkbox" name="htaccess_enabled" value="1" <?php checked(!empty($settings['htaccess_enabled'])); ?>>
+                    Scrie IP-urile banate in .htaccess si lasa Apache sa le refuze</label>
+                    <p class="description">Fisier: <code><?php echo esc_html($this->htaccess_path()); ?></code>.
+                        Necesita <code>AllowOverride All</code>. Blocul este gestionat automat intre markeri si rescris atomic.</p></td>
+            </tr>
+        </table>
+
         <?php submit_button('Salveaza setarile'); ?>
     </form>
 
