@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WebGuard.AI
  * Description: Firewall + detectie si raportare locala: ban pe login, auto-ban, si capturarea evenimentelor de tip file-injection, brute-force, scanner-probing si sql-injection. Doua tabele proprii, pagini separate per tip de problema, tabele live in admin. Blocare la nivel de kernel prin fail2ban.
- * Version: 2026.10.26.2
+ * Version: 2026.10.26.3
  * Author: Atelierul de IT
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -846,6 +846,9 @@ class WebGuardAI {
 
     private function send_forbidden() {
         if (!headers_sent()) {
+            // Semnatura pentru access.log: Apache o poate loga cu
+            // %{X-WebGuard-Block}o (vezi apache/webguard-access-log.conf).
+            header('X-WebGuard-Block: ban');
             status_header(403);
             nocache_headers();
             header('Content-Type: text/plain; charset=utf-8');
@@ -1466,7 +1469,33 @@ class WebGuardAI {
             return '';
         }
 
+        // Marcheaza requesturile blocate pentru access.log:
+        //  - WG_BLOCK=ban  -> Apache poate loga %{WG_BLOCK}e (semnatura)
+        //  - webguard=1    -> permite si excluderea cu CustomLog ... env=!webguard
+        // IP-urile exacte folosesc o singura regex; CIDR-urile folosesc -ipmatch.
+        $exact = array();
+        $cidrs = array();
+        foreach ($ips as $ip) {
+            if (self::is_cidr($ip)) {
+                $cidrs[] = $ip;
+            } else {
+                $exact[] = preg_quote($ip, '/');
+            }
+        }
+        $marker = '';
+        if (!empty($exact)) {
+            $marker .= 'SetEnvIf Remote_Addr "^(' . implode('|', $exact) . ')$" WG_BLOCK=ban webguard=1' . "\n";
+        }
+        if (!empty($cidrs)) {
+            $expr = array();
+            foreach ($cidrs as $cidr) {
+                $expr[] = "%{REMOTE_ADDR} -ipmatch '" . str_replace("'", '', $cidr) . "'";
+            }
+            $marker .= 'SetEnvIfExpr "' . implode(' || ', $expr) . '" WG_BLOCK=ban webguard=1' . "\n";
+        }
+
         return "# BEGIN WebGuard.AI deny (gestionat automat - nu edita intre markeri)\n"
+            . $marker
             . "<RequireAll>\n"
             . "    Require all granted\n"
             . "    Require not ip " . implode(' ', $ips) . "\n"

@@ -128,6 +128,8 @@ Se activează din **Dashboard → Blocare la nivel de Apache (.htaccess)**. Plug
 
 ```apache
 # BEGIN WebGuard.AI deny (gestionat automat - nu edita intre markeri)
+SetEnvIf Remote_Addr "^(1\.2\.3\.4|5\.6\.7\.8)$" WG_BLOCK=ban webguard=1
+SetEnvIfExpr "%{REMOTE_ADDR} -ipmatch '2001:db8::/32'" WG_BLOCK=ban webguard=1
 <RequireAll>
     Require all granted
     Require not ip 1.2.3.4 5.6.7.8 2001:db8::/32
@@ -145,12 +147,26 @@ Se activează din **Dashboard → Blocare la nivel de Apache (.htaccess)**. Plug
 
 **Anti-lockout:** blocarea în `.htaccess` se aplică înainte de PHP, deci link-ul de bypass cu cookie **nu poate** salva un IP aflat în listă. Administratorii nu sunt banați automat (protecția din setări), iar IP-urile din whitelist nu sunt incluse. Dacă îți blochezi din greșeală IP-ul, șterge manual blocul dintre markeri din `.htaccess` (sau dezactivează opțiunea și salvează setările de pe alt IP).
 
+## Semnătura în `access.log` — pentru agentul de monitorizare
+
+`access.log` este scris de **Apache**, nu de plugin, deci pluginul nu poate „semna" singur linia. În schimb, marchează requestul:
+
+- blocările din `.htaccess` primesc variabila de mediu `WG_BLOCK=ban` (și `webguard=1`);
+- blocările din PHP trimit headerul `X-WebGuard-Block: ban`.
+
+Ca semnătura să apară în log, adaugă **o singură dată** în Apache câmpurile `wg=%{WG_BLOCK}e wgp=%{X-WebGuard-Block}o` la `LogFormat`-ul folosit de ISPConfig (fișierul `apache/webguard-access-log.conf` conține linia exactă și pașii). După `apache2ctl configtest && systemctl reload apache2`, agentul de monitorizare poate ignora liniile care conțin `wg=ban` sau `wgp=ban`.
+
+Alternativ, pentru a **exclude complet** cererile blocate de `.htaccess` din `access.log`, adaugă `env=!webguard` la `CustomLog`-ul vlogger. Blocările din PHP rămân în log, dar au `wgp=ban`. Detalii în `apache/webguard-access-log.conf`.
+
+Logul propriu al pluginului (`webguard-bans.log`, în directorul dedicat) este separat și are deja un nume/structură distincte; agentul îl poate ignora după cale.
+
 ## Structură
 
 - `webguard.ai.php` – logica principală (detecție, blocare, ban, rate limiting, ingestie log, pagini de admin).
 - `templates/` – paginile de administrare: `dashboard.php`, `events.php`, `banlist.php`, `whitelist.php`.
 - `assets/admin.js` – reîmprospătarea live a tabelelor de evenimente.
 - `fail2ban/` – filtrul, jail-ul și scriptul de sincronizare pentru blocarea la nivel de kernel.
+- `apache/` – snippet-ul pentru semnătura în `access.log` (o singură modificare de server).
 - `.github/workflows/` – CI: lint PHP la push/PR și Release automat la tag `v*`.
 
 ## Date stocate

@@ -272,6 +272,12 @@ $wg_help = function ($text) {
                         Necesita <code>AllowOverride All</code>. Blocul este gestionat automat intre markeri si rescris atomic.</p></td>
             </tr>
         </table>
+        <p class="description"><strong>Semnatura in access.log:</strong> cererile blocate primesc
+            <code>WG_BLOCK=ban</code> in <code>.htaccess</code> sau headerul <code>X-WebGuard-Block: ban</code>
+            pentru blocarea din PHP. Dupa ce adaugi o singura data in Apache campurile
+            <code>wg=%{WG_BLOCK}e wgp=%{X-WebGuard-Block}o</code> la <code>LogFormat</code>, agentul de
+            monitorizare poate ignora liniile cu <code>wg=ban</code> sau <code>wgp=ban</code>. Vezi
+            <code>apache/webguard-access-log.conf</code> din plugin.</p>
 
         <?php submit_button('Salveaza setarile'); ?>
     </form>
